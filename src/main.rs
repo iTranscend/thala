@@ -51,57 +51,64 @@ impl Node {
 
     async fn start(&self) -> anyhow::Result<!> {
         if let Some(bootstrap_node) = self.bootstrap_node {
-            info!("Connecting to bootstrap node at {}", bootstrap_node);
-
-            let mut stream = TcpStream::connect(bootstrap_node).await?;
-            info!("Connected to bootstrap node!");
-
-            let message = "Sup bootstrap node";
-            stream.write_all(message.as_bytes()).await?;
-
-            let mut buffer = [0; 1024];
-            let n = stream.read(&mut buffer).await?;
-            let response = String::from_utf8_lossy(&buffer[..n]);
-            info!(
-                "Received {} bytes from bootstrap node {} translated to : {}",
-                n, bootstrap_node, response
-            );
+            info!("Connecting to bootstrap node at {}", &bootstrap_node);
+            self.connect_to_peer(&bootstrap_node).await?;
         }
 
         info!("Node listening on {}", self.addr);
+        // Spawns a new task for each incoming connection
+        loop {
+            let (socket_stream, addr) = self.listener.accept().await?;
+
+            tokio::spawn(Self::handle_peer_connection(socket_stream, addr));
+        }
+    }
+
+    async fn connect_to_peer(&self, peer_addr: &SocketAddr) -> anyhow::Result<()> {
+        let mut stream = TcpStream::connect(peer_addr).await?;
+        info!("Connected to peer at {}", peer_addr);
+
+        let message = format!("Sup peer at {}", peer_addr);
+        stream.write_all(message.as_bytes()).await?;
+
+        let mut buffer = [0; 1024];
+        let n = stream.read(&mut buffer).await?;
+        let response = String::from_utf8_lossy(&buffer[..n]);
+        info!(
+            "Received {} bytes from peer {} translated to : {}",
+            n, peer_addr, response
+        );
+
+        Ok(())
+    }
+
+    async fn handle_peer_connection(mut socket_stream: TcpStream, addr: SocketAddr) {
+        let mut buffer = [0; 1024];
 
         loop {
-            let (mut socket_stream, addr) = self.listener.accept().await?;
-
-            tokio::spawn(async move {
-                let mut buffer = [0; 1024];
-
-                loop {
-                    let n = match socket_stream.read(&mut buffer).await {
-                        Ok(n) if n == 0 => break,
-                        Ok(n) => {
-                            info!("Received {} BYTES\n", n);
-                            n
-                        }
-                        Err(err) => {
-                            error!("Error reading from peer {}: {}", addr, err);
-                            break;
-                        }
-                    };
-
-                    let message = String::from_utf8_lossy(&buffer[..n]);
-                    info!("Received {} bytes from {}: {}\n", n, addr, message);
-
-                    let response = format!("Received message. Hello, peer at {}\n", addr);
-                    match socket_stream.write_all(response.as_bytes()).await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("Error writing to peer {}: {}", addr, err);
-                            break;
-                        }
-                    }
+            let n = match socket_stream.read(&mut buffer).await {
+                Ok(n) if n == 0 => break,
+                Ok(n) => {
+                    info!("Received {} BYTES\n", n);
+                    n
                 }
-            });
+                Err(err) => {
+                    error!("Error reading from peer {}: {}", addr, err);
+                    break;
+                }
+            };
+
+            let message = String::from_utf8_lossy(&buffer[..n]);
+            info!("Received {} bytes from {}: {}\n", n, addr, message);
+
+            let response = format!("Received message. Hello, peer at {}\n", addr);
+            match socket_stream.write_all(response.as_bytes()).await {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("Error writing to peer {}: {}", addr, err);
+                    break;
+                }
+            }
         }
     }
 }
