@@ -4,14 +4,16 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     net::SocketAddr,
+    sync::Arc,
     time::Duration,
 };
 
 use clap::Parser;
 use log::{error, info};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::RwLock,
 };
 
 mod cli;
@@ -21,9 +23,9 @@ struct Node {
     listener: TcpListener,
     bootstrap_node: Option<SocketAddr>,
     // Current active peers
-    peers: HashMap<SocketAddr, TcpStream>,
+    peers: Arc<RwLock<HashSet<SocketAddr>>>,
     // Peers we know about
-    known_peers: HashSet<SocketAddr>,
+    known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     config: NodeConfig,
 }
 
@@ -43,13 +45,13 @@ impl Node {
             addr,
             listener,
             bootstrap_node,
-            peers: HashMap::new(),
-            known_peers: HashSet::new(),
+            peers: Arc::new(RwLock::new(HashSet::new())),
+            known_peers: Arc::new(RwLock::new(HashSet::new())),
             config,
         })
     }
 
-    async fn start(&self) -> anyhow::Result<!> {
+    async fn start(self) -> anyhow::Result<!> {
         if let Some(bootstrap_node) = self.bootstrap_node {
             info!("Connecting to bootstrap node at {}", &bootstrap_node);
             self.connect_to_peer(&bootstrap_node).await?;
@@ -57,10 +59,16 @@ impl Node {
 
         info!("Node listening on {}", self.addr);
         // Spawns a new task for each incoming connection
+        // let node = Arc::new(RwLock::new(self));
         loop {
             let (socket_stream, addr) = self.listener.accept().await?;
 
-            tokio::spawn(Self::handle_peer_connection(socket_stream, addr));
+            // Add peer to known_peers
+            let peers = self.peers.clone();
+            let known_peers = self.known_peers.clone();
+            tokio::spawn(async move {
+                Self::handle_peer_connection(socket_stream, addr, peers, known_peers).await;
+            });
         }
     }
 
@@ -82,7 +90,20 @@ impl Node {
         Ok(())
     }
 
-    async fn handle_peer_connection(mut socket_stream: TcpStream, addr: SocketAddr) {
+    async fn handle_peer_connection(
+        mut socket_stream: TcpStream,
+        addr: SocketAddr,
+        peers: Arc<RwLock<HashSet<SocketAddr>>>,
+        known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
+    ) {
+        peers.write().await.insert(addr);
+
+        // add to knonw_peers if not already there
+        let mut known_peers = known_peers.write().await;
+        if !known_peers.contains(&addr) {
+            known_peers.insert(addr);
+        }
+
         let mut buffer = [0; 1024];
 
         loop {
@@ -110,6 +131,8 @@ impl Node {
                 }
             }
         }
+
+        peers.write().await.remove(&addr);
     }
 }
 
