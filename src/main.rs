@@ -17,6 +17,7 @@ use tokio::{
 };
 
 mod cli;
+mod logger;
 
 struct Node {
     addr: SocketAddr,
@@ -137,7 +138,7 @@ impl Node {
 }
 
 async fn init() {
-    env_logger::init();
+    logger::setup();
 }
 
 #[tokio::main]
