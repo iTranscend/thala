@@ -1,30 +1,26 @@
 #![feature(never_type)]
 
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    net::SocketAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use clap::Parser;
 use log::{error, info};
+use message::{ConnectionInfo, Message};
 use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
 
 mod cli;
 mod logger;
+mod message;
 
 struct Node {
     addr: SocketAddr,
     listener: TcpListener,
     bootstrap_node: Option<SocketAddr>,
     // Current active peers
-    peers: Arc<RwLock<HashSet<SocketAddr>>>,
+    active_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     // Peers we know about
     known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     config: NodeConfig,
@@ -46,7 +42,7 @@ impl Node {
             addr,
             listener,
             bootstrap_node,
-            peers: Arc::new(RwLock::new(HashSet::new())),
+            active_peers: Arc::new(RwLock::new(HashSet::new())),
             known_peers: Arc::new(RwLock::new(HashSet::new())),
             config,
         }))
@@ -74,16 +70,16 @@ impl Node {
         let mut stream = TcpStream::connect(peer_addr).await?;
         info!("Connected to peer at {}", peer_addr);
 
-        let message = format!("Sup peer at {}", peer_addr);
-        stream.write_all(message.as_bytes()).await?;
+        let message = Message::ConnectToPeer(ConnectionInfo {
+            listen_addr: self.addr,
+            known_peers: self.known_peers.read().await.clone(),
+            message: Some(format!("Sup peer at {}", peer_addr)),
+        });
 
-        let mut buffer = [0; 1024];
-        let n = stream.read(&mut buffer).await?;
-        let response = String::from_utf8_lossy(&buffer[..n]);
-        info!(
-            "Received {} bytes from peer {} translated to : {}",
-            n, peer_addr, response
-        );
+        let config = bincode::config::standard();
+        let message_bytes = bincode::encode_to_vec(message, config)?;
+
+        let _ = stream.write_all(&message_bytes).await?;
 
         Ok(())
     }
@@ -92,46 +88,52 @@ impl Node {
         self: Arc<Self>,
         mut socket_stream: TcpStream,
         addr: SocketAddr,
-        peers: Arc<RwLock<HashSet<SocketAddr>>>,
-        known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     ) {
-        peers.write().await.insert(addr);
-
-        // add to knonw_peers if not already there
-        let mut known_peers = known_peers.write().await;
-        if !known_peers.contains(&addr) {
-            known_peers.insert(addr);
-        }
-
         let mut buffer = [0; 1024];
 
         loop {
             let n = match socket_stream.read(&mut buffer).await {
                 Ok(n) if n == 0 => break,
-                Ok(n) => {
-                    info!("Received {} BYTES\n", n);
-                    n
-                }
+                Ok(n) => n,
                 Err(err) => {
                     error!("Error reading from peer {}: {}", addr, err);
                     break;
                 }
             };
 
-            let message = String::from_utf8_lossy(&buffer[..n]);
-            info!("Received {} bytes from {}: {}\n", n, addr, message);
+            let decoded_slice: Message =
+                match bincode::decode_from_slice(&buffer[..n], bincode::config::standard()) {
+                    Ok((message, _)) => message,
+                    Err(err) => {
+                        error!(
+                            "Error decoding message from peer when handling peer connection: {}",
+                            err
+                        );
+                        break;
+                    }
+                };
 
-            let response = format!("Received message. Hello, peer at {}\n", addr);
-            match socket_stream.write_all(response.as_bytes()).await {
-                Ok(_) => {}
-                Err(err) => {
-                    error!("Error writing to peer {}: {}", addr, err);
-                    break;
-                }
+            let message = match decoded_slice {
+                Message::ConnectToPeer(connection_info) => connection_info,
+            };
+
+            info!("Received {} bytes from {}: {:#?}\n", n, addr, message);
+
+            let peer_listen_addr = message.listen_addr;
+
+            // add to active peers
+            self.active_peers.write().await.insert(peer_listen_addr);
+
+            // add to know_peers if not already there
+            let mut known_peers = self.known_peers.write().await;
+            if !known_peers.contains(&peer_listen_addr) {
+                known_peers.insert(peer_listen_addr);
             }
+
+            // TODO:Respond to peer for peer discovery
         }
 
-        peers.write().await.remove(&addr);
+        self.active_peers.write().await.remove(&addr);
     }
 }
 
