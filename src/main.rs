@@ -40,19 +40,19 @@ impl Node {
         addr: SocketAddr,
         bootstrap_node: Option<SocketAddr>,
         config: NodeConfig,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Arc<Self>> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self {
+        Ok(Arc::new(Self {
             addr,
             listener,
             bootstrap_node,
             peers: Arc::new(RwLock::new(HashSet::new())),
             known_peers: Arc::new(RwLock::new(HashSet::new())),
             config,
-        })
+        }))
     }
 
-    async fn start(self) -> anyhow::Result<!> {
+    async fn start(self: Arc<Self>) -> anyhow::Result<!> {
         if let Some(bootstrap_node) = self.bootstrap_node {
             info!("Connecting to bootstrap node at {}", &bootstrap_node);
             self.connect_to_peer(&bootstrap_node).await?;
@@ -60,15 +60,12 @@ impl Node {
 
         info!("Node listening on {}", self.addr);
         // Spawns a new task for each incoming connection
-        // let node = Arc::new(RwLock::new(self));
         loop {
             let (socket_stream, addr) = self.listener.accept().await?;
 
-            // Add peer to known_peers
-            let peers = self.peers.clone();
-            let known_peers = self.known_peers.clone();
+            let this = self.clone();
             tokio::spawn(async move {
-                Self::handle_peer_connection(socket_stream, addr, peers, known_peers).await;
+                this.handle_peer_connection(socket_stream, addr).await;
             });
         }
     }
@@ -92,6 +89,7 @@ impl Node {
     }
 
     async fn handle_peer_connection(
+        self: Arc<Self>,
         mut socket_stream: TcpStream,
         addr: SocketAddr,
         peers: Arc<RwLock<HashSet<SocketAddr>>>,
