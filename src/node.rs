@@ -78,8 +78,9 @@ impl Node {
             message: Some(format!("Sup peer at {}", peer_addr)),
         });
 
-        let config = bincode::config::standard();
-        let message_bytes = bincode::encode_to_vec(message, config)?;
+        let message_bytes = Self::serialize(message).await?;
+
+        stream.write_all(&message_bytes).await?;
 
         let _ = stream.write_all(&message_bytes).await?;
 
