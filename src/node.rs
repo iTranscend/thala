@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use log::info;
+use log::{error, info};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -53,7 +53,12 @@ impl Node {
     pub async fn start(self: Arc<Self>) -> anyhow::Result<!> {
         if let Some(bootstrap_node) = self.bootstrap_node {
             info!("Connecting to bootstrap node at {}", &bootstrap_node);
-            self.connect_to_peer(&bootstrap_node).await?;
+            let this = self.clone();
+            tokio::spawn(async move {
+                if let Err(err) = this.connect_to_peer(&bootstrap_node).await {
+                    error!("Error connecting to bootstrap node: {}", err);
+                }
+            });
         }
 
         info!("Node listening on {}", self.addr);
@@ -82,7 +87,7 @@ impl Node {
 
         stream.write_all(&message_bytes).await?;
 
-        let _ = stream.write_all(&message_bytes).await?;
+        self.handle_peer_connection(stream).await?;
 
         Ok(())
     }
