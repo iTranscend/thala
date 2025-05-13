@@ -68,7 +68,9 @@ impl Node {
 
             let this = self.clone();
             tokio::spawn(async move {
-                let _ = this.handle_peer_connection(socket_stream).await;
+                if let Err(err) = this.handle_peer_connection(socket_stream).await {
+                    error!("Error handling peer connection: {}", err);
+                }
             });
         }
     }
@@ -92,9 +94,7 @@ impl Node {
         Ok(())
     }
 
-    async fn handle_peer_connection(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
-        // Channel for relaying msgs to internal message manager for forwarding to peers
-        // create channel for sending msgs between peer tasks
+    async fn handle_peer_connection(&self, stream: TcpStream) -> anyhow::Result<()> {
         // Channel for relaying msgs to internal message manager for forwarding to peers
         let (tx, mut rx): (
             Sender<(Message, Arc<Mutex<TcpStream>>)>,
@@ -122,8 +122,7 @@ impl Node {
 
             tokio::select! {
                 res = task => {
-                    let res = res?;
-                    if let Some(res) = res {
+                    if let Some(res) = res? {
                         let _ = self.handle_peer_message(stream.clone(), res, tx).await;
                     }
                 }
@@ -150,7 +149,7 @@ impl Node {
             Message::ConnectToPeer(connection_info) => connection_info,
         };
 
-        info!("Received {} bytes {:#?}\n", bytes, message);
+        info!("Received {} bytes: \n{:#?}", bytes, message);
 
         let peer_listen_addr = message.listen_addr;
 
