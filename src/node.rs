@@ -164,7 +164,7 @@ impl Node {
         // TODO:Respond to peer for peer discovery
         let response = Message::ConnectToPeer(ConnectionInfo {
             listen_addr: self.addr,
-            known_peers: self.known_peers.read().await.clone(),
+            known_peers: known_peers.clone(),
             message: Some(format!("Sup peer")),
         });
 
