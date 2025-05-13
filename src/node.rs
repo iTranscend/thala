@@ -88,7 +88,9 @@ impl Node {
     }
 
     async fn handle_peer_connection(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
+        // Channel for relaying msgs to internal message manager for forwarding to peers
         // create channel for sending msgs between peer tasks
+        // Channel for relaying msgs to internal message manager for forwarding to peers
         let (tx, mut rx): (
             Sender<(Message, Arc<Mutex<TcpStream>>)>,
             Receiver<(Message, Arc<Mutex<TcpStream>>)>,
@@ -122,8 +124,7 @@ impl Node {
                 }
                 res = rx.recv() => {
                     if let Some((message, stream)) = res {
-                        let bytes = Self::serialize(message).await?;
-                        stream.lock().await.write(&bytes).await?;
+                        let _ = Self::send_message(message, stream).await;
                     }
                 }
             }
@@ -160,27 +161,21 @@ impl Node {
             known_peers.insert(peer_listen_addr);
         }
 
-        info!("Respond to peer");
-
-        // TODO:Respond to peer for peer discovery
         let response = Message::ConnectToPeer(ConnectionInfo {
             listen_addr: self.addr,
             known_peers: known_peers.clone(),
             message: Some(format!("Sup peer")),
         });
 
-        self.send_message(tx, response, stream).await;
+        let _ = tx.send((response, stream)).await?;
 
         Ok(())
     }
 
-    async fn send_message(
-        &self,
-        tx: Sender<(Message, Arc<Mutex<TcpStream>>)>,
-        message: Message,
-        stream: Arc<Mutex<TcpStream>>,
-    ) {
-        let _ = tx.send((message, stream)).await;
+    async fn send_message(message: Message, stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<()> {
+        let bytes = Self::serialize(message).await?;
+        stream.lock().await.write(&bytes).await?;
+        Ok(())
     }
 
     async fn serialize(message: Message) -> anyhow::Result<Vec<u8>> {
