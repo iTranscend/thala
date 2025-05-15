@@ -64,12 +64,13 @@ impl Node {
         info!("Node listening on {}", self.addr);
         // Spawns a new task for each incoming connection
         loop {
-            let (socket_stream, _) = self.listener.accept().await?;
+            let (socket_stream, addr) = self.listener.accept().await?;
 
             let this = self.clone();
             tokio::spawn(async move {
                 if let Err(err) = this.handle_peer_connection(socket_stream).await {
                     error!("Error handling peer connection: {}", err);
+                    this.connections.write().await.remove(&addr);
                 }
             });
         }
