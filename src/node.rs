@@ -11,7 +11,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
         mpsc::{self, Receiver, Sender},
-        Mutex, RwLock,
+        RwLock,
     },
 };
 
@@ -27,7 +27,7 @@ pub struct Node {
     listener: TcpListener,
     bootstrap_node: Option<SocketAddr>,
     // Current active peers
-    connections: Arc<RwLock<HashMap<SocketAddr, Arc<Mutex<TcpStream>>>>>,
+    connections: Arc<RwLock<HashMap<SocketAddr, Sender<Message>>>>,
     // Peers we know about
     known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     config: NodeConfig,
@@ -94,55 +94,45 @@ impl Node {
         Ok(())
     }
 
-    async fn handle_peer_connection(&self, stream: TcpStream) -> anyhow::Result<()> {
+    async fn handle_peer_connection(&self, mut stream: TcpStream) -> anyhow::Result<()> {
         // Channel for relaying msgs to internal message manager for forwarding to peers
-        let (tx, mut rx): (
-            Sender<(Message, Arc<Mutex<TcpStream>>)>,
-            Receiver<(Message, Arc<Mutex<TcpStream>>)>,
-        ) = mpsc::channel(16);
+        let (tx, mut rx): (Sender<Message>, Receiver<Message>) = mpsc::channel(16);
 
-        let stream = Arc::new(Mutex::new(stream));
+        let recv = async |stream: &mut TcpStream| {
+            let mut buffer = [0; 1024];
+
+            let n = stream.read(&mut buffer).await?;
+
+            if n == 0 {
+                return Ok(None);
+            }
+
+            let decoded_slice: (Message, usize) =
+                bincode::decode_from_slice(&buffer[..n], bincode::config::standard())?;
+
+            anyhow::Ok(Some(decoded_slice))
+        };
 
         loop {
-            // TODO: use unsafe for TcpStream handling between sender and receiver tasks since we know only one of the tasks will execute
-            let tx = tx.clone();
-            let task = async {
-                let mut buffer = [0; 1024];
-
-                let n = stream.lock().await.read(&mut buffer).await?;
-
-                if n == 0 {
-                    return Ok::<Option<(Message, usize)>, anyhow::Error>(None);
-                }
-
-                let decoded_slice: (Message, usize) =
-                    bincode::decode_from_slice(&buffer[..n], bincode::config::standard())?;
-                Ok(Some(decoded_slice))
-            };
-
             tokio::select! {
-                res = task => {
+                res = recv(&mut stream) => {
                     if let Some(res) = res? {
-                        let _ = self.handle_peer_message(stream.clone(), res, tx).await;
+                        let _ = self.handle_peer_message(res, tx.clone()).await;
                     }
                 }
                 res = rx.recv() => {
-                    if let Some((message, stream)) = res {
-                        let _ = Self::send_message(message, stream).await;
+                    if let Some(message) = res {
+                        let _ = Self::send_message(&mut stream, message).await;
                     }
                 }
             }
         }
-
-        // self.connections.write().await.remove(&addr);
-        // Ok(())
     }
 
     async fn handle_peer_message(
         &self,
-        stream: Arc<Mutex<TcpStream>>,
         message: (Message, usize),
-        tx: Sender<(Message, Arc<Mutex<TcpStream>>)>,
+        tx: Sender<Message>,
     ) -> anyhow::Result<()> {
         let bytes = message.1;
         let message = match message.0 {
@@ -157,7 +147,7 @@ impl Node {
         self.connections
             .write()
             .await
-            .insert(peer_listen_addr, stream.clone());
+            .insert(peer_listen_addr, tx.clone());
 
         // add to known_peers if not already there
         let mut known_peers = self.known_peers.write().await;
@@ -171,14 +161,14 @@ impl Node {
             message: Some(format!("Sup peer")),
         });
 
-        let _ = tx.send((response, stream)).await?;
+        let _ = tx.send(response).await?;
 
         Ok(())
     }
 
-    async fn send_message(message: Message, stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<()> {
+    async fn send_message(stream: &mut TcpStream, message: Message) -> anyhow::Result<()> {
         let bytes = Self::serialize(message).await?;
-        stream.lock().await.write(&bytes).await?;
+        stream.write(&bytes).await?;
         Ok(())
     }
 
