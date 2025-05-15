@@ -15,7 +15,7 @@ use tokio::{
     },
 };
 
-use crate::message::{ConnectionInfo, Message};
+use crate::message::{ConnectionReq, ConnectionResp, Message};
 
 pub struct NodeConfig {
     pub max_peers: usize,
@@ -80,9 +80,8 @@ impl Node {
         let mut stream = TcpStream::connect(peer_addr).await?;
         info!("Connected to peer at {}", peer_addr);
 
-        let message = Message::ConnectToPeer(ConnectionInfo {
+        let message = Message::ConnectToPeerReq(ConnectionReq {
             listen_addr: self.addr,
-            known_peers: self.known_peers.read().await.clone(),
             message: Some(format!("Sup peer at {}", peer_addr)),
         });
 
@@ -136,33 +135,36 @@ impl Node {
         tx: Sender<Message>,
     ) -> anyhow::Result<()> {
         let bytes = message.1;
-        let message = match message.0 {
-            Message::ConnectToPeer(connection_info) => connection_info,
+        match message.0 {
+            Message::ConnectToPeerReq(connection_req) => {
+                info!("Received {} bytes: \n{:#?}", bytes, connection_req);
+
+                let peer_listen_addr = connection_req.listen_addr;
+
+                // add to active connections map
+                self.connections
+                    .write()
+                    .await
+                    .insert(peer_listen_addr, tx.clone());
+
+                // add to known_peers if not already there
+                let mut known_peers = self.known_peers.write().await;
+                if !known_peers.contains(&peer_listen_addr) {
+                    known_peers.insert(peer_listen_addr);
+                }
+
+                let response = Message::ConnectToPeerResp(ConnectionResp {
+                    listen_addr: self.addr,
+                    known_peers: known_peers.clone(),
+                    message: Some(format!("Sup peer")),
+                });
+
+                let _ = tx.send(response).await?;
+            }
+            Message::ConnectToPeerResp(connection_info) => {
+                info!("Received {} bytes: \n{:#?}", bytes, connection_info);
+            }
         };
-
-        info!("Received {} bytes: \n{:#?}", bytes, message);
-
-        let peer_listen_addr = message.listen_addr;
-
-        // add to active connections map
-        self.connections
-            .write()
-            .await
-            .insert(peer_listen_addr, tx.clone());
-
-        // add to known_peers if not already there
-        let mut known_peers = self.known_peers.write().await;
-        if !known_peers.contains(&peer_listen_addr) {
-            known_peers.insert(peer_listen_addr);
-        }
-
-        let response = Message::ConnectToPeer(ConnectionInfo {
-            listen_addr: self.addr,
-            known_peers: known_peers.clone(),
-            message: Some(format!("Sup peer")),
-        });
-
-        let _ = tx.send(response).await?;
 
         Ok(())
     }
