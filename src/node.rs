@@ -163,6 +163,10 @@ impl Node {
             }
             Message::ConnectToPeerResp(connection_info) => {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_info);
+
+                // Extend known_peers with new peer's known_peers
+                let mut known_peers = self.known_peers.write().await;
+                known_peers.extend(connection_info.known_peers);
             }
         };
 
