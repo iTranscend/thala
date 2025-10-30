@@ -9,4 +9,7 @@ pub struct Args {
 
     #[clap(short, long)]
     pub bootstrap_node: Option<SocketAddr>,
+
+    #[clap(short, long, default_value = "30")]
+    pub peer_reconnection_interval: u64,
 }

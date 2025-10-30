@@ -21,8 +21,7 @@ async fn main() -> Result<!, Box<dyn Error>> {
     let args = cli::Args::parse();
 
     let config = NodeConfig {
-        max_peers: args.max_peers,
-        connection_timeout: Duration::from_secs(args.connection_timeout),
+        peer_reconnection_interval: Duration::from_secs(args.peer_reconnection_interval),
     };
 
     let node = Node::new(args.listen_address, args.bootstrap_node, config).await?;
