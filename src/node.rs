@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use litep2p::crypto::{ed25519::Keypair, PublicKey};
+use litep2p::PeerId;
 use log::{error, info};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,14 +24,17 @@ pub struct NodeConfig {
 }
 
 pub struct Node {
+    /// Peer ID
+    peer_id: PeerId,
+    /// Node listening address
     addr: SocketAddr,
+    /// TCP listener
     listener: TcpListener,
     bootstrap_node: Option<SocketAddr>,
     /// Current active peers
-    // TODO: key should be peer id (or not)
-    connections: Arc<RwLock<HashMap<SocketAddr, Sender<Message>>>>,
+    connections: Arc<RwLock<HashMap<PeerId, (SocketAddr, Sender<Message>)>>>,
     /// Peers we know about
-    known_peers: Arc<RwLock<HashSet<SocketAddr>>>,
+    known_peers: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
     /// Node configuration
     config: NodeConfig,
     /// The last time inactive peer reconnection was attempted
@@ -43,12 +48,17 @@ impl Node {
         config: NodeConfig,
     ) -> anyhow::Result<Arc<Self>> {
         let listener = TcpListener::bind(addr).await?;
+        let keypair = Keypair::generate();
+        let peer_id = PeerId::from_public_key(&PublicKey::Ed25519(keypair.public()));
+        info!("PeerID: {}", peer_id);
+
         Ok(Arc::new(Self {
+            peer_id,
             addr,
             listener,
             bootstrap_node,
             connections: Arc::new(RwLock::new(HashMap::new())),
-            known_peers: Arc::new(RwLock::new(HashSet::new())),
+            known_peers: Arc::new(RwLock::new(HashMap::new())),
             config,
             last_peer_reconnection_timestamp: Arc::new(RwLock::new(Instant::now())),
         }))
@@ -74,29 +84,44 @@ impl Node {
                 {
                     tokio::time::sleep(this.config.peer_reconnection_interval).await;
 
-                    let known_peers = this.known_peers.read().await;
+                    let known_peers_hashset = this
+                        .known_peers
+                        .read()
+                        .await
+                        .clone()
+                        .into_keys()
+                        .collect::<HashSet<PeerId>>();
+
                     let connections_hashset = this
                         .connections
                         .read()
                         .await
                         .clone()
                         .into_keys()
-                        .collect::<HashSet<SocketAddr>>();
+                        .collect::<HashSet<PeerId>>();
 
-                    let diff = known_peers.difference(&connections_hashset);
+                    let diff = known_peers_hashset.difference(&connections_hashset);
 
                     for peer in diff.into_iter() {
-                        let peer = peer.clone();
                         let this = this.clone();
-                        tokio::spawn(async move {
-                            info!("attempting reconnection to peer {:?}", &peer);
-                            if let Err(err) = this.connect_to_peer(&peer).await {
-                                error!(
-                            "Reconnection attempt to peer: {:?} failed with error: {:?}, will retry in  seconds",
-                            peer, err
-                        );
-                            }
-                        });
+                        let peer = *peer;
+                        let known_peers = this.known_peers.read().await;
+
+                        if let Some(peer_addr) = known_peers.get(&peer) {
+                            let peer_addr = *peer_addr;
+                            let this = this.clone();
+                            tokio::spawn(async move {
+                                info!(
+                                    "attempting reconnection to peer {:?} on {}",
+                                    &peer, &peer_addr
+                                );
+                                if let Err(err) = this.connect_to_peer(&peer_addr).await {
+                                    error!(
+                            "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
+                            peer, err, this.config.peer_reconnection_interval);
+                                }
+                            });
+                        }
                     }
 
                     let mut last_peer_reconnection_timestamp =
@@ -110,17 +135,16 @@ impl Node {
         let this = self.clone();
         info!("Node listening on {}", this.addr);
         loop {
-            let (socket_stream, addr) = this.listener.accept().await?;
+            let (socket_stream, _) = this.listener.accept().await?;
 
             let this = this.clone();
             // Spawns a new task for each incoming connection
             tokio::spawn(async move {
                 if let Err(err) = this.handle_peer_connection(socket_stream).await {
                     error!("Error handling peer connection: {}", err);
-                    // TODO: (fix) need to remove peer's inbound address from connections
-                    // not outbound addr, peer's outbound addr is not stored
-                    this.connections.write().await.remove(&addr);
-                    // this.connections.write().await.drain();
+                    // TODO: remove peer from connections map
+                    // this.connections.write().await.remove(&peer_id);
+                    this.connections.write().await.drain();
                 }
             });
         }
@@ -131,6 +155,7 @@ impl Node {
         info!("Connected to peer at {}", peer_addr);
 
         let message = Message::ConnectToPeerReq(ConnectionReq {
+            peer_id: self.peer_id,
             listen_addr: self.addr,
             message: Some(format!("Sup peer at {}", peer_addr)),
         });
@@ -190,34 +215,43 @@ impl Node {
             Message::ConnectToPeerReq(connection_req) => {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_req);
 
+                let peer_id = connection_req.peer_id;
                 let peer_listen_addr = connection_req.listen_addr;
 
                 // add to active connections map
                 self.connections
                     .write()
                     .await
-                    .insert(peer_listen_addr, tx.clone());
+                    .insert(peer_id, (peer_listen_addr, tx.clone()));
 
                 // add to known_peers if not already there
                 let mut known_peers = self.known_peers.write().await;
-                if !known_peers.contains(&peer_listen_addr) {
-                    known_peers.insert(peer_listen_addr);
-                }
+                known_peers.entry(peer_id).or_insert(peer_listen_addr);
 
                 let response = Message::ConnectToPeerResp(ConnectionResp {
+                    peer_id: self.peer_id,
                     listen_addr: self.addr,
                     known_peers: known_peers.clone(),
-                    message: Some(format!("Sup peer")),
+                    message: Some("Sup peer".to_string()),
                 });
 
-                let _ = tx.send(response).await?;
+                tx.send(response).await?;
             }
-            Message::ConnectToPeerResp(connection_info) => {
+            Message::ConnectToPeerResp(mut connection_info) => {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_info);
 
-                // Extend known_peers with new peer's known_peers
+                connection_info.known_peers.remove(&self.peer_id);
+
+                // Extend known_peers with new peer & it's known_peers
                 let mut known_peers = self.known_peers.write().await;
                 known_peers.extend(connection_info.known_peers);
+                known_peers.insert(connection_info.peer_id, connection_info.listen_addr);
+
+                // Extend connections with new peers details
+                self.connections.write().await.insert(
+                    connection_info.peer_id,
+                    (connection_info.listen_addr, tx.clone()),
+                );
             }
         };
 
@@ -226,7 +260,7 @@ impl Node {
 
     async fn send_message(stream: &mut TcpStream, message: Message) -> anyhow::Result<()> {
         let bytes = Self::serialize(message).await?;
-        stream.write(&bytes).await?;
+        let _ = stream.write(&bytes).await?;
         Ok(())
     }
 
