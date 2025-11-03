@@ -30,6 +30,7 @@ pub struct Node {
     addr: SocketAddr,
     /// TCP listener
     listener: TcpListener,
+    /// Bootstrap node
     bootstrap_node: Option<SocketAddr>,
     /// Current active peers
     connections: Arc<RwLock<HashMap<PeerId, (SocketAddr, Sender<Message>)>>>,
@@ -69,13 +70,17 @@ impl Node {
             info!("Connecting to bootstrap node at {}", &bootstrap_node);
             let this = self.clone();
             tokio::spawn(async move {
-                if let Err(err) = this.connect_to_peer(&bootstrap_node).await {
+                let mut peer_id = None;
+                if let Err(err) = this.connect_to_peer(&bootstrap_node, &mut peer_id).await {
                     error!("Error connecting to bootstrap node: {}", err);
+                    if let Some(peer_id) = peer_id {
+                        this.connections.write().await.remove(&peer_id);
+                    }
                 }
             });
         }
 
-        // Spawn a background task to run inactive known_peer reconnnection
+        // Spawn a background task to run inactive known_peer reconnection
         let this = self.clone();
         tokio::spawn(async move {
             loop {
@@ -110,15 +115,21 @@ impl Node {
                         if let Some(peer_addr) = known_peers.get(&peer) {
                             let peer_addr = *peer_addr;
                             let this = this.clone();
+                            let mut peer_id = None;
                             tokio::spawn(async move {
                                 info!(
                                     "attempting reconnection to peer {:?} on {}",
                                     &peer, &peer_addr
                                 );
-                                if let Err(err) = this.connect_to_peer(&peer_addr).await {
+                                if let Err(err) =
+                                    this.connect_to_peer(&peer_addr, &mut peer_id).await
+                                {
                                     error!(
                             "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
                             peer, err, this.config.peer_reconnection_interval);
+                                    if let Some(peer_id) = peer_id {
+                                        this.connections.write().await.remove(&peer_id);
+                                    }
                                 }
                             });
                         }
@@ -140,17 +151,27 @@ impl Node {
             let this = this.clone();
             // Spawns a new task for each incoming connection
             tokio::spawn(async move {
-                if let Err(err) = this.handle_peer_connection(socket_stream).await {
+                // option peerId is passed up the call stack & set when peerId's decoded.
+                // allows us to know what peerId to remove from connections
+                let mut peer_id = None;
+                if let Err(err) = this
+                    .handle_peer_connection(socket_stream, &mut peer_id)
+                    .await
+                {
                     error!("Error handling peer connection: {}", err);
-                    // TODO: remove peer from connections map
-                    // this.connections.write().await.remove(&peer_id);
-                    this.connections.write().await.drain();
+                    if let Some(peer_id) = peer_id {
+                        this.connections.write().await.remove(&peer_id);
+                    }
                 }
             });
         }
     }
 
-    async fn connect_to_peer(&self, peer_addr: &SocketAddr) -> anyhow::Result<()> {
+    async fn connect_to_peer(
+        &self,
+        peer_addr: &SocketAddr,
+        peer_id: &mut Option<PeerId>,
+    ) -> anyhow::Result<()> {
         let mut stream = TcpStream::connect(peer_addr).await?;
         info!("Connected to peer at {}", peer_addr);
 
@@ -164,12 +185,16 @@ impl Node {
 
         stream.write_all(&message_bytes).await?;
 
-        self.handle_peer_connection(stream).await?;
+        self.handle_peer_connection(stream, peer_id).await?;
 
         Ok(())
     }
 
-    async fn handle_peer_connection(&self, mut stream: TcpStream) -> anyhow::Result<()> {
+    async fn handle_peer_connection(
+        &self,
+        mut stream: TcpStream,
+        peer_id: &mut Option<PeerId>,
+    ) -> anyhow::Result<()> {
         // Channel for relaying msgs to internal message manager for forwarding to peers
         let (tx, mut rx): (Sender<Message>, Receiver<Message>) = mpsc::channel(16);
 
@@ -193,7 +218,7 @@ impl Node {
             tokio::select! {
                 res = recv(&mut stream) => {
                     if let Some(res) = res? {
-                        let _ = self.handle_peer_message(res, tx.clone()).await;
+                        let _ = self.handle_peer_message(res, tx.clone(), peer_id).await;
                     }
                 }
                 res = rx.recv() => {
@@ -209,11 +234,15 @@ impl Node {
         &self,
         message: (Message, usize),
         tx: Sender<Message>,
+        peer_id: &mut Option<PeerId>,
     ) -> anyhow::Result<()> {
         let bytes = message.1;
         match message.0 {
             Message::ConnectToPeerReq(connection_req) => {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_req);
+
+                // update peer_id for call stack propagation
+                *peer_id = Some(connection_req.peer_id);
 
                 let peer_id = connection_req.peer_id;
                 let peer_listen_addr = connection_req.listen_addr;
@@ -240,14 +269,17 @@ impl Node {
             Message::ConnectToPeerResp(mut connection_info) => {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_info);
 
+                // update peer_id for call stack propagation
+                *peer_id = Some(connection_info.peer_id);
+
                 connection_info.known_peers.remove(&self.peer_id);
 
-                // Extend known_peers with new peer & it's known_peers
+                // Extend known_peers with new peer & its known_peers
                 let mut known_peers = self.known_peers.write().await;
                 known_peers.extend(connection_info.known_peers);
                 known_peers.insert(connection_info.peer_id, connection_info.listen_addr);
 
-                // Extend connections with new peers details
+                // Extend connections with new peer's details
                 self.connections.write().await.insert(
                     connection_info.peer_id,
                     (connection_info.listen_addr, tx.clone()),
