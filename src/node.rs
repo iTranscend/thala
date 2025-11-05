@@ -21,6 +21,38 @@ use crate::message::{ConnectionReq, ConnectionResp, Message};
 
 pub struct NodeConfig {
     pub peer_reconnection_interval: Duration,
+    pub max_backoff_interval: Duration,
+    pub backoff_multiplier: f32,
+    pub reconnection_retries_cap: u32,
+}
+
+#[derive(Clone, Debug)]
+struct PeerState {
+    addr: SocketAddr,
+    next_check: Instant,
+    current_backoff: Duration,
+    consecutive_failures: u32,
+}
+
+impl PeerState {
+    fn new(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            next_check: Instant::now(),
+            current_backoff: Duration::from_secs(1),
+            consecutive_failures: 0,
+        }
+    }
+}
+
+impl std::fmt::Display for PeerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PeerState {{ addr: {}, next_check: {:?}, current_backoff: {:?}, consecutive_failures: {} }}",
+            self.addr, self.next_check, self.current_backoff, self.consecutive_failures
+        )
+    }
 }
 
 pub struct Node {
@@ -35,7 +67,7 @@ pub struct Node {
     /// Current active peers
     connections: Arc<RwLock<HashMap<PeerId, (SocketAddr, Sender<Message>)>>>,
     /// Peers we know about
-    known_peers: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
+    known_peers: Arc<RwLock<HashMap<PeerId, PeerState>>>,
     /// Node configuration
     config: NodeConfig,
     /// The last time inactive peer reconnection was attempted
@@ -70,10 +102,13 @@ impl Node {
             info!("Connecting to bootstrap node at {}", &bootstrap_node);
             let this = self.clone();
             tokio::spawn(async move {
-                let mut peer_id = None;
-                if let Err(err) = this.connect_to_peer(&bootstrap_node, &mut peer_id).await {
+                let mut failed_peer_id = None;
+                if let Err(err) = this
+                    .connect_to_peer(&bootstrap_node, &mut failed_peer_id)
+                    .await
+                {
                     error!("Error connecting to bootstrap node: {}", err);
-                    if let Some(peer_id) = peer_id {
+                    if let Some(peer_id) = failed_peer_id {
                         this.connections.write().await.remove(&peer_id);
                     }
                 }
@@ -84,11 +119,9 @@ impl Node {
         let this = self.clone();
         tokio::spawn(async move {
             loop {
-                if this.last_peer_reconnection_timestamp.read().await.elapsed()
+                if { this.last_peer_reconnection_timestamp.read().await }.elapsed()
                     >= this.config.peer_reconnection_interval
                 {
-                    tokio::time::sleep(this.config.peer_reconnection_interval).await;
-
                     let known_peers_hashset = this
                         .known_peers
                         .read()
@@ -110,28 +143,59 @@ impl Node {
                     for peer in diff.into_iter() {
                         let this = this.clone();
                         let peer = *peer;
-                        let known_peers = this.known_peers.read().await;
+                        let mut known_peers = this.known_peers.write().await;
 
-                        if let Some(peer_addr) = known_peers.get(&peer) {
-                            let peer_addr = *peer_addr;
+                        if let Some(peer_state) = known_peers.get_mut(&peer) {
+                            let peer_addr = peer_state.addr;
                             let this = this.clone();
-                            let mut peer_id = None;
-                            tokio::spawn(async move {
-                                info!(
-                                    "attempting reconnection to peer {:?} on {}",
-                                    &peer, &peer_addr
-                                );
-                                if let Err(err) =
-                                    this.connect_to_peer(&peer_addr, &mut peer_id).await
-                                {
-                                    error!(
+                            let mut failed_peer_id = None;
+
+                            // If peer reconnection retries exceeds cap, presume dead
+                            // and remove from known_peers.
+                            if peer_state.consecutive_failures
+                                >= this.config.reconnection_retries_cap
+                            {
+                                continue;
+                            }
+
+                            if Instant::now() >= peer_state.next_check {
+                                tokio::spawn(async move {
+                                    info!(
+                                        "attempting reconnection to peer {:?} on {}",
+                                        &peer, &peer_addr
+                                    );
+                                    if let Err(err) =
+                                        this.connect_to_peer(&peer_addr, &mut failed_peer_id).await
+                                    {
+                                        if let Some(peer_id) = failed_peer_id {
+                                            this.connections.write().await.remove(&peer_id);
+                                        }
+
+                                        // Update peer backoff
+                                        let mut known_peers = this.known_peers.write().await;
+
+                                        if let Some(peer_state) = known_peers.get_mut(&peer) {
+                                            let new_backoff = (peer_state
+                                                .current_backoff
+                                                .as_secs_f32()
+                                                * this.config.backoff_multiplier)
+                                                .min(
+                                                    this.config.max_backoff_interval.as_secs_f32(),
+                                                );
+
+                                            peer_state.current_backoff =
+                                                Duration::from_secs_f32(new_backoff);
+                                            peer_state.next_check =
+                                                Instant::now() + peer_state.current_backoff;
+                                            peer_state.consecutive_failures += 1;
+
+                                            error!(
                             "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
-                            peer, err, this.config.peer_reconnection_interval);
-                                    if let Some(peer_id) = peer_id {
-                                        this.connections.write().await.remove(&peer_id);
+                            peer, err, peer_state.current_backoff);
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
 
@@ -153,13 +217,13 @@ impl Node {
             tokio::spawn(async move {
                 // option peerId is passed up the call stack & set when peerId's decoded.
                 // allows us to know what peerId to remove from connections
-                let mut peer_id = None;
+                let mut failed_peer_id = None;
                 if let Err(err) = this
-                    .handle_peer_connection(socket_stream, &mut peer_id)
+                    .handle_peer_connection(socket_stream, &mut failed_peer_id)
                     .await
                 {
                     error!("Error handling peer connection: {}", err);
-                    if let Some(peer_id) = peer_id {
+                    if let Some(peer_id) = failed_peer_id {
                         this.connections.write().await.remove(&peer_id);
                     }
                 }
@@ -202,7 +266,10 @@ impl Node {
         let recv = async |stream: &mut TcpStream| {
             let mut buffer = [0; 1024];
 
-            let n = stream.read(&mut buffer).await?;
+            let n = tokio::time::timeout(Duration::from_secs(20), stream.read(&mut buffer))
+                .await
+                .map_err(|_| anyhow::anyhow!("Read timeout"))?
+                .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
 
             if n == 0 {
                 return Ok(None);
@@ -242,6 +309,7 @@ impl Node {
                 info!("Received {} bytes: \n{:#?}", bytes, connection_req);
 
                 // update peer_id for call stack propagation
+                // (handy in case of connection failure)
                 *peer_id = Some(connection_req.peer_id);
 
                 let peer_id = connection_req.peer_id;
@@ -255,12 +323,18 @@ impl Node {
 
                 // add to known_peers if not already there
                 let mut known_peers = self.known_peers.write().await;
-                known_peers.entry(peer_id).or_insert(peer_listen_addr);
+                known_peers
+                    .entry(peer_id)
+                    .or_insert(PeerState::new(peer_listen_addr));
 
                 let response = Message::ConnectToPeerResp(ConnectionResp {
                     peer_id: self.peer_id,
                     listen_addr: self.addr,
-                    known_peers: known_peers.clone(),
+                    known_peers: known_peers
+                        .clone()
+                        .iter()
+                        .map(|(peer_id, peer_state)| (*peer_id, peer_state.addr))
+                        .collect(),
                     message: Some("Sup peer".to_string()),
                 });
 
@@ -276,8 +350,16 @@ impl Node {
 
                 // Extend known_peers with new peer & its known_peers
                 let mut known_peers = self.known_peers.write().await;
-                known_peers.extend(connection_info.known_peers);
-                known_peers.insert(connection_info.peer_id, connection_info.listen_addr);
+                known_peers.extend(
+                    connection_info
+                        .known_peers
+                        .iter()
+                        .map(|(peer_id, addr)| (*peer_id, PeerState::new(*addr))),
+                );
+                known_peers.insert(
+                    connection_info.peer_id,
+                    PeerState::new(connection_info.listen_addr),
+                );
 
                 // Extend connections with new peer's details
                 self.connections.write().await.insert(
