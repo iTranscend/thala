@@ -7,7 +7,6 @@ use std::{
 
 use litep2p::crypto::{ed25519::Keypair, PublicKey};
 use litep2p::PeerId;
-use log::{error, info};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -16,6 +15,7 @@ use tokio::{
         RwLock,
     },
 };
+use tracing::{event, span, Level};
 
 use crate::message::{ConnectionReq, ConnectionResp, Message};
 
@@ -83,7 +83,7 @@ impl Node {
         let listener = TcpListener::bind(addr).await?;
         let keypair = Keypair::generate();
         let peer_id = PeerId::from_public_key(&PublicKey::Ed25519(keypair.public()));
-        info!("PeerID: {}", peer_id);
+        event!(Level::INFO, "PeerID: {}", peer_id);
 
         Ok(Arc::new(Self {
             peer_id,
@@ -98,8 +98,13 @@ impl Node {
     }
 
     pub async fn start(self: Arc<Self>) -> anyhow::Result<!> {
+        let _span = span!(Level::TRACE, "start").entered();
         if let Some(bootstrap_node) = self.bootstrap_node {
-            info!("Connecting to bootstrap node at {}", &bootstrap_node);
+            event!(
+                Level::INFO,
+                "Connecting to bootstrap node at {}",
+                &bootstrap_node
+            );
             let this = self.clone();
             tokio::spawn(async move {
                 let mut failed_peer_id = None;
@@ -107,7 +112,7 @@ impl Node {
                     .connect_to_peer(&bootstrap_node, &mut failed_peer_id)
                     .await
                 {
-                    error!("Error connecting to bootstrap node: {}", err);
+                    event!(Level::ERROR, "Error connecting to bootstrap node: {}", err);
                     if let Some(peer_id) = failed_peer_id {
                         this.connections.write().await.remove(&peer_id);
                     }
@@ -118,6 +123,8 @@ impl Node {
         // Spawn a background task to run inactive known_peer reconnection
         let this = self.clone();
         tokio::spawn(async move {
+            let span = span!(Level::DEBUG, "peer_reconnection_loop");
+            let _enter = span.enter();
             loop {
                 if { this.last_peer_reconnection_timestamp.read().await }.elapsed()
                     >= this.config.peer_reconnection_interval
@@ -160,9 +167,11 @@ impl Node {
 
                             if Instant::now() >= peer_state.next_check {
                                 tokio::spawn(async move {
-                                    info!(
+                                    event!(
+                                        Level::INFO,
                                         "attempting reconnection to peer {:?} on {}",
-                                        &peer, &peer_addr
+                                        &peer,
+                                        &peer_addr
                                     );
                                     if let Err(err) =
                                         this.connect_to_peer(&peer_addr, &mut failed_peer_id).await
@@ -189,7 +198,7 @@ impl Node {
                                                 Instant::now() + peer_state.current_backoff;
                                             peer_state.consecutive_failures += 1;
 
-                                            error!(
+                                            event!(Level::ERROR,
                             "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
                             peer, err, peer_state.current_backoff);
                                         }
@@ -208,7 +217,7 @@ impl Node {
 
         // main loop to continuously listen for new tcp connections
         let this = self.clone();
-        info!("Node listening on {}", this.addr);
+        event!(Level::INFO, "Node listening on {}", this.addr);
         loop {
             let (socket_stream, _) = this.listener.accept().await?;
 
@@ -222,7 +231,7 @@ impl Node {
                     .handle_peer_connection(socket_stream, &mut failed_peer_id)
                     .await
                 {
-                    error!("Error handling peer connection: {}", err);
+                    event!(Level::ERROR, "Error handling peer connection: {}", err);
                     if let Some(peer_id) = failed_peer_id {
                         this.connections.write().await.remove(&peer_id);
                     }
@@ -237,7 +246,7 @@ impl Node {
         peer_id: &mut Option<PeerId>,
     ) -> anyhow::Result<()> {
         let mut stream = TcpStream::connect(peer_addr).await?;
-        info!("Connected to peer at {}", peer_addr);
+        event!(Level::INFO, "Connected to peer at {}", peer_addr);
 
         let message = Message::ConnectToPeerReq(ConnectionReq {
             peer_id: self.peer_id,
@@ -306,7 +315,12 @@ impl Node {
         let bytes = message.1;
         match message.0 {
             Message::ConnectToPeerReq(connection_req) => {
-                info!("Received {} bytes: \n{:#?}", bytes, connection_req);
+                event!(
+                    Level::INFO,
+                    "Received {} bytes: \n{:#?}",
+                    bytes,
+                    connection_req
+                );
 
                 // update peer_id for call stack propagation
                 // (handy in case of connection failure)
@@ -341,7 +355,12 @@ impl Node {
                 tx.send(response).await?;
             }
             Message::ConnectToPeerResp(mut connection_info) => {
-                info!("Received {} bytes: \n{:#?}", bytes, connection_info);
+                event!(
+                    Level::INFO,
+                    "Received {} bytes: \n{:#?}",
+                    bytes,
+                    connection_info
+                );
 
                 // update peer_id for call stack propagation
                 *peer_id = Some(connection_info.peer_id);

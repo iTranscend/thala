@@ -3,21 +3,31 @@
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
+use tracing::{info, Level};
 
 use node::{Node, NodeConfig};
+use tracing_config::{init_tracing, TracingConfig};
 
 mod cli;
-mod logger;
 mod message;
 mod node;
-
-async fn init() {
-    logger::setup();
-}
+mod tracing_config;
 
 #[tokio::main]
 async fn main() -> Result<!, Box<dyn Error>> {
-    init().await;
+    // Initialize tracing
+    let tracing_config = TracingConfig {
+        level: Level::INFO,
+        json_output: false,
+        enable_file_logging: true,
+        file_path: Some("thala-node.log".to_string()),
+        enable_metrics: false,
+        ..Default::default()
+    };
+    init_tracing(tracing_config)?;
+
+    info!("Starting Thala Node");
+
     let args = cli::Args::parse();
 
     let config = NodeConfig {
