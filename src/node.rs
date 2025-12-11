@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use jsonrpsee::server::{RpcModule, Server};
+use jsonrpsee::{core::Serialize, IntoResponse, ResponsePayload};
 use litep2p::crypto::{ed25519::Keypair, PublicKey};
 use litep2p::PeerId;
 use tokio::{
@@ -24,6 +26,7 @@ pub struct NodeConfig {
     pub max_backoff_interval: Duration,
     pub backoff_multiplier: f32,
     pub reconnection_retries_cap: u32,
+    pub rpc_addr: Option<SocketAddr>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +77,23 @@ pub struct Node {
     last_peer_reconnection_timestamp: Arc<RwLock<Instant>>,
 }
 
+#[derive(Serialize, Clone)]
+struct NodeInfo {
+    id: PeerId,
+    peers: usize,
+    connections: usize,
+    listen_addr: SocketAddr,
+    rpc_addr: Option<SocketAddr>,
+}
+
+impl IntoResponse for NodeInfo {
+    type Output = NodeInfo;
+
+    fn into_response(self) -> jsonrpsee::ResponsePayload<'static, Self::Output> {
+        ResponsePayload::success(self)
+    }
+}
+
 impl Node {
     pub async fn new(
         addr: SocketAddr,
@@ -95,6 +115,16 @@ impl Node {
             config,
             last_peer_reconnection_timestamp: Arc::new(RwLock::new(Instant::now())),
         }))
+    }
+
+    async fn get_node_info(&self) -> anyhow::Result<NodeInfo> {
+        Ok(NodeInfo {
+            id: self.peer_id,
+            peers: self.known_peers.read().await.len(),
+            connections: self.connections.read().await.len(),
+            listen_addr: self.listener.local_addr()?,
+            rpc_addr: self.config.rpc_addr,
+        })
     }
 
     pub async fn start(self: Arc<Self>) -> anyhow::Result<!> {
@@ -123,6 +153,12 @@ impl Node {
         // Spawn a background task to run inactive known_peer reconnection
         let this = self.clone();
         tokio::spawn(async move { Self::inactive_peer_reconnection(this) });
+
+        let this = self.clone();
+        if let Some(rpc_addr) = self.config.rpc_addr {
+            // Spawn a background task to run rpc server
+            tokio::spawn(async move { this.start_rpc_server(rpc_addr).await });
+        }
 
         // main loop to continuously listen for new tcp connections
         let this = self.clone();
@@ -387,6 +423,68 @@ impl Node {
                 *last_peer_reconnection_timestamp = Instant::now();
             }
         }
+    }
+
+    async fn start_rpc_server(self: Arc<Self>, addr: SocketAddr) -> anyhow::Result<()> {
+        // let _span = span!(Level::DEBUG, "rpc-server").entered();
+        event!(Level::INFO, "Starting RPC server");
+
+        let server = Server::builder().build(addr).await?;
+        let mut module = RpcModule::new(());
+
+        // info RPC endpoint
+        let this = self.clone();
+        module.register_async_method("info", move |_, _, _| {
+            let this = this.clone();
+            async move {
+                // return ID, peer count, connnection count
+                let node_info: NodeInfo = this.get_node_info().await.unwrap();
+                node_info
+            }
+        })?;
+
+        // peers RPC endpoint
+        let this = self.clone();
+        module.register_async_method("peers", move |_, _, _| {
+            let this = this.clone();
+            async move {
+                let peers = this
+                    .known_peers
+                    .read()
+                    .await
+                    .clone()
+                    .into_keys()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<String>>();
+
+                peers
+            }
+        })?;
+
+        // active_connections RPC endpoint
+        let this = self.clone();
+        module.register_async_method("connections", move |_, _, _| {
+            let this = this.clone();
+            async move {
+                let connections = this
+                    .connections
+                    .read()
+                    .await
+                    .clone()
+                    .into_keys()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<String>>();
+
+                connections
+            }
+        })?;
+
+        let addrr = server.local_addr()?;
+        let handle = server.start(module);
+        event!(Level::INFO, "RPC server listening on {}", addrr);
+
+        tokio::spawn(handle.stopped());
+        Ok(())
     }
 
     async fn send_message(stream: &mut TcpStream, message: Message) -> anyhow::Result<()> {

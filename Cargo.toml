@@ -7,10 +7,10 @@ edition = "2021"
 anyhow = "1.0.97"
 bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.32", features = ["derive"] }
-env_logger = "0.10.0"
+jsonrpsee = { version = "0.26.0", features = ["server", "jsonrpsee-http-client"] }
 litep2p = "0.11.1"
-log = "0.4.27"
 nu-ansi-term = "0.50"
+serde = "1.0.228"
 tokio = { version = "1.44.1", features = [
   "rt",
   "macros",

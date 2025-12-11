@@ -27,4 +27,8 @@ pub struct Args {
     /// Reconnection retries at which peer reconnection attempts should be stopped
     #[clap(short, long, default_value = "13")]
     pub reconnection_retries_cap: u32,
+    
+    /// RPC listening address
+    #[clap(long)]
+    pub rpc_addr: Option<SocketAddr>,
 }
