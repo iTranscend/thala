@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 
@@ -20,15 +20,29 @@ pub struct Args {
     #[clap(short = 'x', long, default_value = "2.0")]
     pub backoff_multiplier: f32,
 
-    /// Duration in secs after which to stop peer reconnection attempts
+    /// Maximum backoff interval in secs
     #[clap(short, long, default_value = "2000")]
     pub max_backoff_interval: u64,
 
     /// Reconnection retries at which peer reconnection attempts should be stopped
     #[clap(short, long, default_value = "13")]
     pub reconnection_retries_cap: u32,
-    
+
     /// RPC listening address
     #[clap(long)]
     pub rpc_addr: Option<SocketAddr>,
+
+    /// Data directory path (default: ~/.thala)
+    #[clap(short, long)]
+    pub data_dir: Option<PathBuf>,
+}
+
+impl Args {
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone().unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("Could not determine home directory")
+                .join(".thala")
+        })
+    }
 }

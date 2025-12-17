@@ -1,13 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use jsonrpsee::server::{RpcModule, Server};
 use jsonrpsee::{core::Serialize, IntoResponse, ResponsePayload};
-use litep2p::crypto::{ed25519::Keypair, PublicKey};
+use litep2p::crypto::PublicKey;
 use litep2p::PeerId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -19,7 +20,10 @@ use tokio::{
 };
 use tracing::{event, span, Level};
 
-use crate::message::{ConnectionReq, ConnectionResp, Message};
+use crate::{
+    identity::IdentityManager,
+    message::{ConnectionReq, ConnectionResp, Message},
+};
 
 pub struct NodeConfig {
     pub peer_reconnection_interval: Duration,
@@ -27,6 +31,7 @@ pub struct NodeConfig {
     pub backoff_multiplier: f32,
     pub reconnection_retries_cap: u32,
     pub rpc_addr: Option<SocketAddr>,
+    pub data_dir: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -101,7 +106,12 @@ impl Node {
         config: NodeConfig,
     ) -> anyhow::Result<Arc<Self>> {
         let listener = TcpListener::bind(addr).await?;
-        let keypair = Keypair::generate();
+
+        let identity_manager = IdentityManager::new(config.data_dir.clone())?;
+
+        // if node keypair exists at data-dir, load it, else generate a new one
+        let keypair = identity_manager.load_or_generate_keypair()?;
+
         let peer_id = PeerId::from_public_key(&PublicKey::Ed25519(keypair.public()));
         event!(Level::INFO, "PeerID: {}", peer_id);
 

@@ -9,6 +9,7 @@ use node::{Node, NodeConfig};
 use tracing_config::{init_tracing, TracingConfig};
 
 mod cli;
+mod identity;
 mod message;
 mod node;
 mod tracing_config;
@@ -36,6 +37,7 @@ async fn main() -> Result<!, Box<dyn Error>> {
         max_backoff_interval: Duration::from_secs(args.max_backoff_interval),
         reconnection_retries_cap: args.reconnection_retries_cap,
         rpc_addr: args.rpc_addr,
+        data_dir: args.data_dir(),
     };
 
     let node = Node::new(args.listen_address, args.bootstrap_node, config).await?;

@@ -1,6 +1,6 @@
 # Thala
 
-barebones p2p network for wasm contract execution
+barebones p2p network
 
 
 ## Usage
