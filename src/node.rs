@@ -159,7 +159,7 @@ impl Node {
 
         // Spawn a background task to run inactive known_peer reconnection
         let this = self.clone();
-        tokio::spawn(async move { Self::inactive_peer_reconnection(this) });
+        tokio::spawn(async move { this.inactive_peer_reconnection().await });
 
         let this = self.clone();
         if let Some(rpc_addr) = self.config.rpc_addr {
@@ -366,7 +366,7 @@ impl Node {
         Ok(())
     }
 
-    async fn inactive_peer_reconnection(this: Arc<Node>) -> anyhow::Result<!> {
+    async fn inactive_peer_reconnection(self: Arc<Self>) -> anyhow::Result<!> {
         let span = span!(Level::DEBUG, "peer_reconnection_loop");
         let _enter = span.enter();
         loop {
