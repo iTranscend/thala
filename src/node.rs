@@ -78,8 +78,6 @@ pub struct Node {
     known_peers: Arc<RwLock<HashMap<PeerId, PeerState>>>,
     /// Node configuration
     config: NodeConfig,
-    /// The last time inactive peer reconnection was attempted
-    last_peer_reconnection_timestamp: Arc<RwLock<Instant>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -123,7 +121,6 @@ impl Node {
             connections: Arc::new(RwLock::new(HashMap::new())),
             known_peers: Arc::new(RwLock::new(HashMap::new())),
             config,
-            last_peer_reconnection_timestamp: Arc::new(RwLock::new(Instant::now())),
         }))
     }
 
@@ -350,87 +347,82 @@ impl Node {
         let span = span!(Level::DEBUG, "peer_reconnection_loop");
         let _enter = span.enter();
         loop {
-            if { this.last_peer_reconnection_timestamp.read().await }.elapsed()
-                >= this.config.peer_reconnection_interval
-            {
-                let known_peers_hashset = this
-                    .known_peers
-                    .read()
-                    .await
-                    .clone()
-                    .into_keys()
-                    .collect::<HashSet<PeerId>>();
+            event!(Level::INFO, "peer reconnection loop");
 
-                let connections_hashset = this
-                    .connections
-                    .read()
-                    .await
-                    .clone()
-                    .into_keys()
-                    .collect::<HashSet<PeerId>>();
+            // Sleep for the reconnection interval
+            tokio::time::sleep(self.config.peer_reconnection_interval).await;
 
-                let diff = known_peers_hashset.difference(&connections_hashset);
+            let known_peers_hashset = self
+                .known_peers
+                .read()
+                .await
+                .clone()
+                .into_keys()
+                .collect::<HashSet<PeerId>>();
 
-                for peer in diff.into_iter() {
+            let connections_hashset = self
+                .connections
+                .read()
+                .await
+                .clone()
+                .into_keys()
+                .collect::<HashSet<PeerId>>();
+
+            let diff = known_peers_hashset.difference(&connections_hashset);
+
+            for peer in diff.into_iter() {
+                let this = self.clone();
+                let peer = *peer;
+                let mut known_peers = this.known_peers.write().await;
+
+                if let Some(peer_state) = known_peers.get_mut(&peer) {
+                    let peer_addr = peer_state.addr;
                     let this = this.clone();
-                    let peer = *peer;
-                    let mut known_peers = this.known_peers.write().await;
+                    let mut failed_peer_id = None;
 
-                    if let Some(peer_state) = known_peers.get_mut(&peer) {
-                        let peer_addr = peer_state.addr;
-                        let this = this.clone();
-                        let mut failed_peer_id = None;
+                    // If peer reconnection retries exceeds cap, presume dead
+                    // and remove from known_peers.
+                    if peer_state.consecutive_failures >= this.config.reconnection_retries_cap {
+                        continue;
+                    }
 
-                        // If peer reconnection retries exceeds cap, presume dead
-                        // and remove from known_peers.
-                        if peer_state.consecutive_failures >= this.config.reconnection_retries_cap {
-                            continue;
-                        }
+                    if Instant::now() >= peer_state.next_check {
+                        tokio::spawn(async move {
+                            event!(
+                                Level::INFO,
+                                "attempting reconnection to peer {:?} on {}",
+                                &peer,
+                                &peer_addr
+                            );
+                            if let Err(err) =
+                                this.connect_to_peer(&peer_addr, &mut failed_peer_id).await
+                            {
+                                if let Some(peer_id) = failed_peer_id {
+                                    this.connections.write().await.remove(&peer_id);
+                                }
 
-                        if Instant::now() >= peer_state.next_check {
-                            tokio::spawn(async move {
-                                event!(
-                                    Level::INFO,
-                                    "attempting reconnection to peer {:?} on {}",
-                                    &peer,
-                                    &peer_addr
-                                );
-                                if let Err(err) =
-                                    this.connect_to_peer(&peer_addr, &mut failed_peer_id).await
-                                {
-                                    if let Some(peer_id) = failed_peer_id {
-                                        this.connections.write().await.remove(&peer_id);
-                                    }
+                                // Update peer backoff
+                                let mut known_peers = this.known_peers.write().await;
 
-                                    // Update peer backoff
-                                    let mut known_peers = this.known_peers.write().await;
+                                if let Some(peer_state) = known_peers.get_mut(&peer) {
+                                    let new_backoff = (peer_state.current_backoff.as_secs_f32()
+                                        * this.config.backoff_multiplier)
+                                        .min(this.config.max_backoff_interval.as_secs_f32());
 
-                                    if let Some(peer_state) = known_peers.get_mut(&peer) {
-                                        let new_backoff = (peer_state
-                                            .current_backoff
-                                            .as_secs_f32()
-                                            * this.config.backoff_multiplier)
-                                            .min(this.config.max_backoff_interval.as_secs_f32());
+                                    peer_state.current_backoff =
+                                        Duration::from_secs_f32(new_backoff);
+                                    peer_state.next_check =
+                                        Instant::now() + peer_state.current_backoff;
+                                    peer_state.consecutive_failures += 1;
 
-                                        peer_state.current_backoff =
-                                            Duration::from_secs_f32(new_backoff);
-                                        peer_state.next_check =
-                                            Instant::now() + peer_state.current_backoff;
-                                        peer_state.consecutive_failures += 1;
-
-                                        event!(Level::ERROR,
+                                    event!(Level::ERROR,
                         "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
                         peer, err, peer_state.current_backoff);
-                                    }
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
-
-                let mut last_peer_reconnection_timestamp =
-                    this.last_peer_reconnection_timestamp.write().await;
-                *last_peer_reconnection_timestamp = Instant::now();
             }
         }
     }
