@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use jsonrpsee::server::{RpcModule, Server};
@@ -227,9 +227,9 @@ impl Node {
         let recv = async |stream: &mut TcpStream| {
             let mut buffer = [0; 1024];
 
-            let n = tokio::time::timeout(Duration::from_secs(20), stream.read(&mut buffer))
+            let n = stream
+                .read(&mut buffer)
                 .await
-                .map_err(|_| anyhow::anyhow!("Read timeout"))?
                 .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
 
             if n == 0 {
@@ -242,6 +242,9 @@ impl Node {
             anyhow::Ok(Some(decoded_slice))
         };
 
+        // Configure heartbeat
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+
         loop {
             tokio::select! {
                 res = recv(&mut stream) => {
@@ -253,6 +256,12 @@ impl Node {
                     if let Some(message) = res {
                         let _ = Self::send_message(&mut stream, message).await;
                     }
+                }
+                _ = heartbeat.tick() => {
+                    // send keepalive ping message
+                    let message = Message::Ping { timestamp_millis: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64 };
+                    let _ = Self::send_message(&mut stream, message).await;
+                    event!(Level::TRACE, "Sent ping to peer");
                 }
             }
         }
@@ -336,6 +345,20 @@ impl Node {
                 self.connections.write().await.insert(
                     connection_info.peer_id,
                     (connection_info.listen_addr, tx.clone()),
+                );
+            }
+            Message::Ping { timestamp_millis } => {
+                event!(Level::TRACE, "Received ping from peer");
+                tx.send(Message::Pong { timestamp_millis }).await?;
+            }
+            Message::Pong { timestamp_millis } => {
+                let now_millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+
+                let latency_ms = now_millis.saturating_sub(timestamp_millis);
+                event!(
+                    Level::TRACE,
+                    "Received pong from peer. Latency: {:?}ms",
+                    latency_ms
                 );
             }
         };

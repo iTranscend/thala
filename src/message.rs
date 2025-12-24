@@ -25,4 +25,6 @@ pub struct ConnectionReq {
 pub enum Message {
     ConnectToPeerReq(ConnectionReq),
     ConnectToPeerResp(ConnectionResp),
+    Ping { timestamp_millis: u64 },
+    Pong { timestamp_millis: u64 },
 }
