@@ -10,6 +10,7 @@ use jsonrpsee::server::{RpcModule, Server};
 use jsonrpsee::{core::Serialize, IntoResponse, ResponsePayload};
 use litep2p::crypto::PublicKey;
 use litep2p::PeerId;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -23,6 +24,7 @@ use tracing::{event, span, Level};
 use crate::{
     identity::IdentityManager,
     message::{ConnectionReq, ConnectionResp, Message},
+    types::Capabilities,
     validation::Validate,
 };
 
@@ -77,6 +79,8 @@ pub struct Node {
     connections: Arc<RwLock<HashMap<PeerId, (SocketAddr, Sender<Message>)>>>,
     /// Peers we know about
     known_peers: Arc<RwLock<HashMap<PeerId, PeerState>>>,
+    /// Node capabilities
+    capabilities: Capabilities,
     /// Node configuration
     config: NodeConfig,
 }
@@ -104,8 +108,6 @@ impl Node {
         bootstrap_node: Option<SocketAddr>,
         config: NodeConfig,
     ) -> anyhow::Result<Arc<Self>> {
-        let listener = TcpListener::bind(addr).await?;
-
         let identity_manager = IdentityManager::new(config.data_dir.clone())?;
 
         // if node keypair exists at data-dir, load it, else generate a new one
@@ -114,14 +116,29 @@ impl Node {
         let peer_id = PeerId::from_public_key(&PublicKey::Ed25519(keypair.public()));
         event!(Level::INFO, "PeerID: {}", peer_id);
 
+        // get node hardware capabilities
+        let memory_refresh_kind = MemoryRefreshKind::nothing();
+        let sys = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_memory(memory_refresh_kind.with_ram())
+                .with_cpu(CpuRefreshKind::nothing()),
+        );
+
         Ok(Arc::new(Self {
             peer_id,
             addr,
-            listener,
+            listener: TcpListener::bind(addr).await?,
             bootstrap_node,
             connections: Arc::new(RwLock::new(HashMap::new())),
             known_peers: Arc::new(RwLock::new(HashMap::new())),
             config,
+            capabilities: Capabilities {
+                cpu_cores: sys.cpus().len().clone(),
+                memory: sys.total_memory() / 1_000_000_000,
+                // TODO: retrieve gpu specs with wgpu/ash/other more suitable alternative
+                gpu_memory: None,
+                supported_models: vec![],
+            },
         }))
     }
 
@@ -205,6 +222,7 @@ impl Node {
             peer_id: self.peer_id,
             listen_addr: self.addr,
             message: Some(format!("Sup peer at {}", peer_addr)),
+            capabilities: self.capabilities.clone(),
         });
 
         let message_bytes = Self::serialize(message).await?;
@@ -312,6 +330,7 @@ impl Node {
                         .map(|(peer_id, peer_state)| (*peer_id, peer_state.addr))
                         .collect(),
                     message: Some("Sup peer".to_string()),
+                    capabilities: self.capabilities.clone(),
                 });
 
                 tx.send(response).await?;

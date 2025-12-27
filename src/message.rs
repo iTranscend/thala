@@ -13,6 +13,7 @@ pub struct ConnectionResp {
     #[bincode(with_serde)]
     pub known_peers: HashMap<PeerId, SocketAddr>,
     pub message: Option<String>,
+    pub capabilities: Capabilities,
 }
 
 #[derive(Encode, Decode, Debug)]
@@ -21,6 +22,7 @@ pub struct ConnectionReq {
     pub peer_id: PeerId,
     pub listen_addr: SocketAddr,
     pub message: Option<String>,
+    pub capabilities: Capabilities,
 }
 
 #[derive(Encode, Decode, Debug)]
