@@ -23,6 +23,7 @@ use tracing::{event, span, Level};
 use crate::{
     identity::IdentityManager,
     message::{ConnectionReq, ConnectionResp, Message},
+    validation::Validate,
 };
 
 pub struct NodeConfig {
@@ -360,6 +361,15 @@ impl Node {
                     "Received pong from peer. Latency: {:?}ms",
                     latency_ms
                 );
+            }
+            Message::TaskAnnouncement(task_announcement) => {
+                task_announcement.validate()?;
+            }
+            Message::TaskClaim(task_claim) => {
+                task_claim.validate()?;
+            }
+            Message::TaskResult(task_result) => {
+                task_result.validate()?;
             }
         };
 

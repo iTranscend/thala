@@ -1,6 +1,6 @@
 # Thala
 
-A barebones peer-to-peer network implementation in Rust.
+A barebones peer-to-peer network for distributed AI workloads.
 
 ## Features
 
