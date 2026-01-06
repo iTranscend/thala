@@ -10,6 +10,7 @@ A barebones peer-to-peer network for distributed AI workloads.
 - **Persistent Identity**: Node keys are saved to disk for identity persistence across restarts
 - **JSON-RPC Server**: Optional HTTP server for querying node state
 - **Keep-Alive**: Heartbeat mechanism to keep connections alive
+- **GPU detection**: GPU capability detection for use in workloads (currently supports Nvidia GPUs) 
 
 ## Quick Start
 

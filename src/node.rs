@@ -7,9 +7,11 @@ use std::{
 };
 
 use jsonrpsee::server::{RpcModule, Server};
-use jsonrpsee::{core::Serialize, IntoResponse, ResponsePayload};
+use jsonrpsee::{IntoResponse, ResponsePayload};
 use litep2p::crypto::PublicKey;
 use litep2p::PeerId;
+use nvml_wrapper::Nvml;
+use serde::Serialize;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -24,7 +26,7 @@ use tracing::{event, span, Level};
 use crate::{
     identity::IdentityManager,
     message::{ConnectionReq, ConnectionResp, Message},
-    types::Capabilities,
+    types::{Capabilities, GraphicCard},
     validation::Validate,
 };
 
@@ -124,6 +126,28 @@ impl Node {
                 .with_cpu(CpuRefreshKind::nothing()),
         );
 
+        event!(Level::TRACE, "Loading Nvidia GPU capabilities if present");
+        let mut nvidia_gpus = vec![];
+
+        // load nvidia gpu data
+        if let Ok(nvml) = Nvml::init() {
+            for i in 0..nvml.device_count()? {
+                let device = nvml.device_by_index(i)?;
+                let card = GraphicCard {
+                    id: device.uuid()?,
+                    name: device.name()?,
+                    brand: device.brand()?,
+                    memory: device.memory_info()?.free,
+                    architecture: device.architecture()?,
+                    compute_mode: device.compute_mode()?,
+                };
+                nvidia_gpus.push(card)
+            }
+            event!(Level::TRACE, "Nvidia data loaded");
+        } else {
+            event!(Level::TRACE, "No Nvidia GPUs found");
+        }
+
         Ok(Arc::new(Self {
             peer_id,
             addr,
@@ -135,8 +159,7 @@ impl Node {
             capabilities: Capabilities {
                 cpu_cores: sys.cpus().len().clone(),
                 memory: sys.total_memory() / 1_000_000_000,
-                // TODO: retrieve gpu specs with wgpu/ash/other more suitable alternative
-                gpu_memory: None,
+                nvidia_gpus,
                 supported_models: vec![],
             },
         }))

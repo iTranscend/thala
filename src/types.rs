@@ -43,6 +43,20 @@ pub enum TaskResultData {
 pub struct Capabilities {
     pub cpu_cores: usize,
     pub memory: u64,
-    pub gpu_memory: Option<u32>,
+    pub nvidia_gpus: Vec<GraphicCard>,
     pub supported_models: Vec<String>,
+}
+
+#[derive(Encode, Decode, Debug, Clone)]
+pub struct GraphicCard {
+    #[bincode(with_serde)]
+    pub id: String,
+    pub name: String,
+    #[bincode(with_serde)]
+    pub brand: nvml_wrapper::enum_wrappers::device::Brand,
+    pub memory: u64,
+    #[bincode(with_serde)]
+    pub architecture: nvml_wrapper::enums::device::DeviceArchitecture,
+    #[bincode(with_serde)]
+    pub compute_mode: nvml_wrapper::enum_wrappers::device::ComputeMode,
 }
