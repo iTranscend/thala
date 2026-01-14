@@ -45,15 +45,17 @@ struct PeerState {
     next_check: Instant,
     current_backoff: Duration,
     consecutive_failures: u32,
+    capabilities: Capabilities,
 }
 
 impl PeerState {
-    fn new(addr: SocketAddr) -> Self {
+    fn new(addr: SocketAddr, capabilities: Capabilities) -> Self {
         Self {
             addr,
             next_check: Instant::now(),
             current_backoff: Duration::from_secs(1),
             consecutive_failures: 0,
+            capabilities,
         }
     }
 }
@@ -340,9 +342,10 @@ impl Node {
 
                 // add to known_peers if not already there
                 let mut known_peers = self.known_peers.write().await;
-                known_peers
-                    .entry(peer_id)
-                    .or_insert(PeerState::new(peer_listen_addr));
+                known_peers.entry(peer_id).or_insert(PeerState::new(
+                    peer_listen_addr,
+                    connection_req.capabilities,
+                ));
 
                 let response = Message::ConnectToPeerResp(ConnectionResp {
                     peer_id: self.peer_id,
@@ -350,7 +353,9 @@ impl Node {
                     known_peers: known_peers
                         .clone()
                         .iter()
-                        .map(|(peer_id, peer_state)| (*peer_id, peer_state.addr))
+                        .map(|(peer_id, peer_state)| {
+                            (*peer_id, (peer_state.addr, peer_state.capabilities.clone()))
+                        })
                         .collect(),
                     message: Some("Sup peer".to_string()),
                     capabilities: self.capabilities.clone(),
@@ -373,15 +378,14 @@ impl Node {
 
                 // Extend known_peers with new peer & its known_peers
                 let mut known_peers = self.known_peers.write().await;
-                known_peers.extend(
-                    connection_info
-                        .known_peers
-                        .iter()
-                        .map(|(peer_id, addr)| (*peer_id, PeerState::new(*addr))),
-                );
+                known_peers.extend(connection_info.known_peers.iter().map(
+                    |(peer_id, (addr, capabilities))| {
+                        (*peer_id, PeerState::new(*addr, capabilities.clone()))
+                    },
+                ));
                 known_peers.insert(
                     connection_info.peer_id,
-                    PeerState::new(connection_info.listen_addr),
+                    PeerState::new(connection_info.listen_addr, connection_info.capabilities),
                 );
 
                 // Extend connections with new peer's details

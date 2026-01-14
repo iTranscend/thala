@@ -1,4 +1,5 @@
 use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{error::ValidationError, validation::Validate};
@@ -39,7 +40,7 @@ pub enum TaskResultData {
     },
 }
 
-#[derive(Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone, Serialize, Deserialize)]
 pub struct Capabilities {
     pub cpu_cores: usize,
     pub memory: u64,
@@ -47,7 +48,7 @@ pub struct Capabilities {
     pub supported_models: Vec<String>,
 }
 
-#[derive(Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone, Serialize, Deserialize)]
 pub struct GraphicCard {
     #[bincode(with_serde)]
     pub id: String,

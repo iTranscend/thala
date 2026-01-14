@@ -11,7 +11,7 @@ pub struct ConnectionResp {
     pub peer_id: PeerId,
     pub listen_addr: SocketAddr,
     #[bincode(with_serde)]
-    pub known_peers: HashMap<PeerId, SocketAddr>,
+    pub known_peers: HashMap<PeerId, (SocketAddr, Capabilities)>,
     pub message: Option<String>,
     pub capabilities: Capabilities,
 }
