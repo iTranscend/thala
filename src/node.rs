@@ -132,23 +132,30 @@ impl Node {
         let mut nvidia_gpus = vec![];
 
         // load nvidia gpu data
-        if let Ok(nvml) = Nvml::init() {
-            for i in 0..nvml.device_count()? {
-                let device = nvml.device_by_index(i)?;
-                let card = GraphicCard {
-                    id: device.uuid()?,
-                    name: device.name()?,
-                    brand: device.brand()?,
-                    memory: device.memory_info()?.free,
-                    architecture: device.architecture()?,
-                    compute_mode: device.compute_mode()?,
-                };
-                nvidia_gpus.push(card)
+        match Nvml::init() {
+            Ok(nvml) => {
+                for i in 0..nvml.device_count()? {
+                    let device = nvml.device_by_index(i)?;
+                    let card = GraphicCard {
+                        id: device.uuid()?,
+                        name: device.name()?,
+                        brand: device.brand()?,
+                        memory: device.memory_info()?.free,
+                        architecture: device.architecture()?,
+                        compute_mode: device.compute_mode()?,
+                    };
+                    nvidia_gpus.push(card);
+                }
+                event!(Level::TRACE, "Nvidia data loaded");
             }
-            event!(Level::TRACE, "Nvidia data loaded");
-        } else {
-            event!(Level::TRACE, "No Nvidia GPUs found");
-        }
+            Err(e) => {
+                event!(
+                    Level::TRACE,
+                    "No Nvidia GPUs found. Error: {}",
+                    e.to_string()
+                );
+            }
+        };
 
         Ok(Arc::new(Self {
             peer_id,
