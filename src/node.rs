@@ -226,7 +226,7 @@ impl Node {
             let this = this.clone();
             // Spawns a new task for each incoming connection
             tokio::spawn(async move {
-                // option peerId is passed up the call stack & set when peerId's decoded.
+                // Option<PeerId> is passed up the call stack & set when peerId's decoded.
                 // allows us to know what peerId to remove from connections
                 let mut failed_peer_id = None;
                 if let Err(err) = this
@@ -287,10 +287,10 @@ impl Node {
                 return Ok(None);
             }
 
-            let decoded_slice: (Message, usize) =
-                bincode::decode_from_slice(&buffer[..n], bincode::config::standard())?;
+            // n+1 because postcard expects the byte slice to be larger than the message being decoded
+            let decoded_slice: Message = postcard::from_bytes(&buffer[..n + 1])?;
 
-            anyhow::Ok(Some(decoded_slice))
+            anyhow::Ok(Some((decoded_slice, n)))
         };
 
         // Configure heartbeat
@@ -582,8 +582,7 @@ impl Node {
     }
 
     async fn serialize(message: Message) -> anyhow::Result<Vec<u8>> {
-        let config = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(message, config)?;
+        let bytes = postcard::to_stdvec(&message)?;
         Ok(bytes)
     }
 }

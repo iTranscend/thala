@@ -1,12 +1,10 @@
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{error::ValidationError, validation::Validate};
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 pub struct TaskId {
-    #[bincode(with_serde)]
     id: Uuid,
 }
 
@@ -22,14 +20,14 @@ impl Validate for TaskId {
     }
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TaskType {
     Benchmark { model: String, dataset: String },
     Training,
     Inference,
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 pub enum TaskResultData {
     Success {
         output: Vec<u8>,
@@ -40,7 +38,7 @@ pub enum TaskResultData {
     },
 }
 
-#[derive(Encode, Decode, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capabilities {
     pub cpu_cores: usize,
     pub memory: u64,
@@ -48,16 +46,15 @@ pub struct Capabilities {
     pub supported_models: Vec<String>,
 }
 
-#[derive(Encode, Decode, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphicCard {
-    #[bincode(with_serde)]
     pub id: String,
     pub name: String,
-    #[bincode(with_serde)]
+
     pub brand: nvml_wrapper::enum_wrappers::device::Brand,
     pub memory: u64,
-    #[bincode(with_serde)]
+
     pub architecture: nvml_wrapper::enums::device::DeviceArchitecture,
-    #[bincode(with_serde)]
+
     pub compute_mode: nvml_wrapper::enum_wrappers::device::ComputeMode,
 }
