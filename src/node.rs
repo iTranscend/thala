@@ -567,6 +567,13 @@ impl Node {
             }
         })?;
 
+        // capabilitites RPC endpoint
+        let this = self.clone();
+        module.register_async_method("capabilities", move |_, _, _| {
+            let this = this.clone();
+            async move { Some(this.capabilities.clone()) }
+        })?;
+
         let addrr = server.local_addr()?;
         let handle = server.start(module);
         event!(Level::INFO, "RPC server listening on {}", addrr);

@@ -112,6 +112,7 @@ When `--rpc-addr` is specified, a JSON-RPC server is started at the given addres
 | `info` | Get node information | Node ID, listen address, peer counts |
 | `peers` | Get all known peers | List of peer IDs and addresses |
 | `connections` | Get active connections | List of currently connected peers |
+| `capabilities` | Get a node's capabilities | cores, memory, gpus, models |
 
 ### Example
 
