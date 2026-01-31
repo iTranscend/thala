@@ -37,24 +37,3 @@ pub enum TaskResultData {
         output: Option<Vec<u8>>,
     },
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Capabilities {
-    pub cpu_cores: usize,
-    pub memory: u64,
-    pub nvidia_gpus: Vec<GraphicCard>,
-    pub supported_models: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphicCard {
-    pub id: String,
-    pub name: String,
-
-    pub brand: nvml_wrapper::enum_wrappers::device::Brand,
-    pub memory: u64,
-
-    pub architecture: nvml_wrapper::enums::device::DeviceArchitecture,
-
-    pub compute_mode: nvml_wrapper::enum_wrappers::device::ComputeMode,
-}

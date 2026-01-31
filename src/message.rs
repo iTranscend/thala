@@ -2,8 +2,9 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use litep2p::PeerId;
 use serde::{Deserialize, Serialize};
+use shared::types::Capabilities;
 
-use crate::types::{Capabilities, TaskId, TaskResultData, TaskType};
+use crate::types::{TaskId, TaskResultData, TaskType};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionResp {

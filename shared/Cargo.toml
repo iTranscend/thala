@@ -1,0 +1,15 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+
+
+[dependencies]
+anyhow.workspace = true
+jsonrpsee.workspace = true
+litep2p.workspace = true
+nu-ansi-term.workspace = true
+nvml-wrapper.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

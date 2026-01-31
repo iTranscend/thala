@@ -7,11 +7,10 @@ use std::{
 };
 
 use jsonrpsee::server::{RpcModule, Server};
-use jsonrpsee::{IntoResponse, ResponsePayload};
-use litep2p::crypto::PublicKey;
 use litep2p::PeerId;
+use litep2p::crypto::PublicKey;
 use nvml_wrapper::Nvml;
-use serde::Serialize;
+use shared::types::{Capabilities, GraphicCard, NodeInfo};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -26,7 +25,6 @@ use tracing::{event, span, Level};
 use crate::{
     identity::IdentityManager,
     message::{ConnectionReq, ConnectionResp, Message},
-    types::{Capabilities, GraphicCard},
     validation::Validate,
 };
 
@@ -87,23 +85,6 @@ pub struct Node {
     capabilities: Capabilities,
     /// Node configuration
     config: NodeConfig,
-}
-
-#[derive(Serialize, Clone)]
-struct NodeInfo {
-    id: PeerId,
-    peers: usize,
-    connections: usize,
-    listen_addr: SocketAddr,
-    rpc_addr: Option<SocketAddr>,
-}
-
-impl IntoResponse for NodeInfo {
-    type Output = NodeInfo;
-
-    fn into_response(self) -> jsonrpsee::ResponsePayload<'static, Self::Output> {
-        ResponsePayload::success(self)
-    }
 }
 
 impl Node {

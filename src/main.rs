@@ -6,14 +6,13 @@ use clap::Parser;
 use tracing::{info, Level};
 
 use node::{Node, NodeConfig};
-use tracing_config::{init_tracing, TracingConfig};
+use shared::tracing::{TracingConfig, init_tracing};
 
 mod cli;
 mod error;
 mod identity;
 mod message;
 mod node;
-mod tracing_config;
 mod types;
 mod validation;
 
