@@ -3,7 +3,7 @@
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
-use tracing::{info, Level};
+use tracing::{Level, info};
 
 use node::{Node, NodeConfig};
 use shared::tracing::{TracingConfig, init_tracing};
