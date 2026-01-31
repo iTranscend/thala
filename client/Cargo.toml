@@ -1,0 +1,11 @@
+[package]
+name = "thala-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap.workspace = true
+shared.workspace = true
+tokio.workspace = true
+jsonrpsee.workspace = true
+tracing.workspace = true

@@ -128,7 +128,22 @@ curl -X POST http://127.0.0.1:3330 \
   }'
 ```
 
-### Peer Reconnection
+## Thala CLI client
+
+You can also interact with any thala node via the CLI client
+
+### Install
+
+```sh
+cargo install --locked --path client --bin thala-client
+```
+
+**Get node capabilities**
+```sh
+thala-client --node-rpc http://127.0.0.1:3330 capabilities
+```
+
+## Peer Reconnection
 
 The node implements exponential backoff for reconnection attempts:
 
