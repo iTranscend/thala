@@ -16,11 +16,11 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
-        mpsc::{self, Receiver, Sender},
         RwLock,
+        mpsc::{self, Receiver, Sender},
     },
 };
-use tracing::{event, span, Level};
+use tracing::{Level, event, span};
 
 use crate::{
     identity::IdentityManager,
@@ -38,15 +38,17 @@ pub struct NodeConfig {
 }
 
 #[derive(Clone, Debug)]
-struct PeerState {
+struct PeerInfo {
     addr: SocketAddr,
+    /// Next timestamp at which to retry a failed connection
     next_check: Instant,
+    /// Current downtime duration to wait before next
     current_backoff: Duration,
     consecutive_failures: u32,
     capabilities: Capabilities,
 }
 
-impl PeerState {
+impl PeerInfo {
     fn new(addr: SocketAddr, capabilities: Capabilities) -> Self {
         Self {
             addr,
@@ -58,7 +60,7 @@ impl PeerState {
     }
 }
 
-impl std::fmt::Display for PeerState {
+impl std::fmt::Display for PeerInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -80,7 +82,7 @@ pub struct Node {
     /// Current active peers
     connections: Arc<RwLock<HashMap<PeerId, (SocketAddr, Sender<Message>)>>>,
     /// Peers we know about
-    known_peers: Arc<RwLock<HashMap<PeerId, PeerState>>>,
+    known_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     /// Node capabilities
     capabilities: Capabilities,
     /// Node configuration
@@ -330,10 +332,9 @@ impl Node {
 
                 // add to known_peers if not already there
                 let mut known_peers = self.known_peers.write().await;
-                known_peers.entry(peer_id).or_insert(PeerState::new(
-                    peer_listen_addr,
-                    connection_req.capabilities,
-                ));
+                known_peers
+                    .entry(peer_id)
+                    .or_insert(PeerInfo::new(peer_listen_addr, connection_req.capabilities));
 
                 let response = Message::ConnectToPeerResp(ConnectionResp {
                     peer_id: self.peer_id,
@@ -341,8 +342,8 @@ impl Node {
                     known_peers: known_peers
                         .clone()
                         .iter()
-                        .map(|(peer_id, peer_state)| {
-                            (*peer_id, (peer_state.addr, peer_state.capabilities.clone()))
+                        .map(|(peer_id, peer_info)| {
+                            (*peer_id, (peer_info.addr, peer_info.capabilities.clone()))
                         })
                         .collect(),
                     message: Some("Sup peer".to_string()),
@@ -368,12 +369,12 @@ impl Node {
                 let mut known_peers = self.known_peers.write().await;
                 known_peers.extend(connection_info.known_peers.iter().map(
                     |(peer_id, (addr, capabilities))| {
-                        (*peer_id, PeerState::new(*addr, capabilities.clone()))
+                        (*peer_id, PeerInfo::new(*addr, capabilities.clone()))
                     },
                 ));
                 known_peers.insert(
                     connection_info.peer_id,
-                    PeerState::new(connection_info.listen_addr, connection_info.capabilities),
+                    PeerInfo::new(connection_info.listen_addr, connection_info.capabilities),
                 );
 
                 // Extend connections with new peer's details
@@ -442,18 +443,18 @@ impl Node {
                 let peer = *peer;
                 let mut known_peers = this.known_peers.write().await;
 
-                if let Some(peer_state) = known_peers.get_mut(&peer) {
-                    let peer_addr = peer_state.addr;
+                if let Some(peer_info) = known_peers.get_mut(&peer) {
+                    let peer_addr = peer_info.addr;
                     let this = this.clone();
                     let mut failed_peer_id = None;
 
                     // If peer reconnection retries exceeds cap, presume dead
                     // and remove from known_peers.
-                    if peer_state.consecutive_failures >= this.config.reconnection_retries_cap {
+                    if peer_info.consecutive_failures >= this.config.reconnection_retries_cap {
                         continue;
                     }
 
-                    if Instant::now() >= peer_state.next_check {
+                    if Instant::now() >= peer_info.next_check {
                         tokio::spawn(async move {
                             event!(
                                 Level::INFO,
@@ -471,20 +472,24 @@ impl Node {
                                 // Update peer backoff
                                 let mut known_peers = this.known_peers.write().await;
 
-                                if let Some(peer_state) = known_peers.get_mut(&peer) {
-                                    let new_backoff = (peer_state.current_backoff.as_secs_f32()
+                                if let Some(peer_info) = known_peers.get_mut(&peer) {
+                                    let new_backoff = (peer_info.current_backoff.as_secs_f32()
                                         * this.config.backoff_multiplier)
                                         .min(this.config.max_backoff_interval.as_secs_f32());
 
-                                    peer_state.current_backoff =
+                                    peer_info.current_backoff =
                                         Duration::from_secs_f32(new_backoff);
-                                    peer_state.next_check =
-                                        Instant::now() + peer_state.current_backoff;
-                                    peer_state.consecutive_failures += 1;
+                                    peer_info.next_check =
+                                        Instant::now() + peer_info.current_backoff;
+                                    peer_info.consecutive_failures += 1;
 
-                                    event!(Level::ERROR,
-                        "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
-                        peer, err, peer_state.current_backoff);
+                                    event!(
+                                        Level::ERROR,
+                                        "Reconnection attempt to peer: {} failed with error: {}, will retry in {:?}",
+                                        peer,
+                                        err,
+                                        peer_info.current_backoff
+                                    );
                                 }
                             }
                         });
