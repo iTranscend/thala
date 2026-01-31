@@ -6,11 +6,12 @@ use jsonrpsee::{
     http_client::{HeaderMap, HeaderValue, HttpClient},
     rpc_params,
 };
-use shared::tracing::{TracingConfig, init_tracing};
-use shared::types::{Capabilities, NodeInfo};
+use shared::types::{Capabilities, NodeInfo, Task};
+use shared::{
+    tracing::{TracingConfig, init_tracing},
+    types::{TaskId, TaskType},
+};
 use tracing::{Level, event};
-
-use crate::cli::Cli;
 
 mod cli;
 
@@ -29,7 +30,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     init_tracing(tracing_config)?;
 
-    let cli = Cli::parse();
+    let cli = cli::Cli::parse();
     let rpc = cli.node_rpc;
 
     let mut headers = HeaderMap::new();
@@ -39,17 +40,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build(rpc.to_string())?;
 
     match cli.cmd {
-        cli::Commands::Info => {
+        cli::Command::Info => {
             event!(Level::DEBUG, "info RPC call made to {:?}", &rpc);
             let res: NodeInfo = client.request("info", rpc_params!("")).await?;
             println!("{:#?}", res);
         }
-        cli::Commands::Peers => {
+        cli::Command::Peers => {
             event!(Level::DEBUG, "peers RPC call made to {:?}", &rpc);
             let res: Vec<String> = client.request("peers", rpc_params!("")).await?;
             println!("{:#?}", res);
         }
-        cli::Commands::Connections => {
+        cli::Command::Connections => {
             event!(
                 Level::DEBUG,
                 "active_connections RPC call made to {:?}",
@@ -58,11 +59,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let res: Vec<String> = client.request("connections", rpc_params!("")).await?;
             println!("{:#?}", res);
         }
-        cli::Commands::Capabilities => {
+        cli::Command::Capabilities => {
             event!(Level::DEBUG, "capabilities RPC call made to {:?}", &rpc);
             let res: Capabilities = client.request("capabilities", rpc_params!("")).await?;
             println!("{:#?}", res);
         }
+        cli::Command::Task(task) => match task {
+            cli::Task::Benchmark(benchmark) => {
+                let model = benchmark.model;
+                let dataset = benchmark.dataset;
+
+                let task_type = TaskType::Benchmark { model, dataset };
+                let task = Task::new(TaskId::new(), task_type);
+                println!("New Benchmark task created: {:?}", task.id());
+
+                event!(Level::DEBUG, "broadcast_task RPC call made to {:?}", &rpc);
+                let res: bool = client.request("broadcast_task", rpc_params!(task)).await?;
+                println!("{:#?}", res);
+            }
+        },
     }
 
     Ok(())

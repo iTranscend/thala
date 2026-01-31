@@ -9,3 +9,4 @@ shared.workspace = true
 tokio.workspace = true
 jsonrpsee.workspace = true
 tracing.workspace = true
+uuid.workspace = true

@@ -2,9 +2,9 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use litep2p::PeerId;
 use serde::{Deserialize, Serialize};
-use shared::types::Capabilities;
+use shared::{types::{Capabilities,Task, TaskId}, validation::{Validate, MIN_TASK_EXPIRATION_TIME}, error::ValidationError};
 
-use crate::types::{TaskId, TaskResultData, TaskType};
+use crate::types::{ TaskResultData};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionResp {
@@ -25,10 +25,21 @@ pub struct ConnectionReq {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskAnnouncement {
-    task_id: TaskId,
-    task_type: TaskType,
-    coordinator: PeerId,
+    pub task: Task,
+    pub coordinator: PeerId,
     pub expires: u64,
+}
+
+impl Validate for TaskAnnouncement {
+    type Error = ValidationError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        if self.expires < MIN_TASK_EXPIRATION_TIME {
+            Err(ValidationError::InvalidExpires)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,12 +49,30 @@ pub struct TaskClaim {
     estimated_duration: u64,
 }
 
+impl Validate for TaskClaim {
+    type Error = ValidationError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        // TODO: validate claimer's capabilities
+        todo!()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskResult {
     task_id: TaskId,
     result: TaskResultData,
     worker_id: PeerId,
     execution_time_ms: u64,
+}
+
+impl Validate for TaskResult {
+    type Error = ValidationError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        // TODO: verify that result is from peer that claimed task.
+        todo!()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

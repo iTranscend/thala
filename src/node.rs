@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -10,7 +10,10 @@ use jsonrpsee::server::{RpcModule, Server};
 use litep2p::PeerId;
 use litep2p::crypto::PublicKey;
 use nvml_wrapper::Nvml;
-use shared::types::{Capabilities, GraphicCard, NodeInfo};
+use shared::{
+    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId},
+    validation::Validate,
+};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -24,8 +27,7 @@ use tracing::{Level, event, span};
 
 use crate::{
     identity::IdentityManager,
-    message::{ConnectionReq, ConnectionResp, Message},
-    validation::Validate,
+    message::{ConnectionReq, ConnectionResp, Message, TaskAnnouncement},
 };
 
 pub struct NodeConfig {
@@ -42,7 +44,7 @@ struct PeerInfo {
     addr: SocketAddr,
     /// Next timestamp at which to retry a failed connection
     next_check: Instant,
-    /// Current downtime duration to wait before next
+    /// Current downtime duration to wait before next check (needs review, next_check & current_backoff can be reduced to one struct entry)
     current_backoff: Duration,
     consecutive_failures: u32,
     capabilities: Capabilities,
@@ -87,6 +89,12 @@ pub struct Node {
     capabilities: Capabilities,
     /// Node configuration
     config: NodeConfig,
+    /// Seen tasks
+    seen_tasks: HashSet<TaskId>,
+    /// Pending tasks
+    pending_tasks: HashMap<TaskId, Task>,
+    /// Queue for tasks
+    task_queue: VecDeque<TaskId>,
 }
 
 impl Node {
@@ -154,6 +162,9 @@ impl Node {
                 nvidia_gpus,
                 supported_models: vec![],
             },
+            seen_tasks: HashSet::new(),
+            pending_tasks: HashMap::new(),
+            task_queue: VecDeque::new(),
         }))
     }
 
@@ -560,11 +571,42 @@ impl Node {
             async move { Some(this.capabilities.clone()) }
         })?;
 
+        // broadcast_task RPC endpoint
+        let this = self.clone();
+        module.register_async_method("broadcast_task", move |params, _, _| {
+            println!("trrr");
+            // extract params
+            let task = params.parse::<Task>().unwrap();
+
+            let this = this.clone();
+            async move {
+                let _ = this.broadcast_task(task).await.unwrap();
+                ()
+            }
+        })?;
+
         let addrr = server.local_addr()?;
         let handle = server.start(module);
         event!(Level::INFO, "RPC server listening on {}", addrr);
 
         tokio::spawn(handle.stopped());
+        Ok(())
+    }
+
+    async fn broadcast_task(&self, task: Task) -> anyhow::Result<()> {
+        let connections = self.connections.read().await.clone();
+
+        for connection in connections {
+            let (_, (_, tx)) = connection;
+
+            let task_announcement = Message::TaskAnnouncement(TaskAnnouncement {
+                task: task.clone(),
+                coordinator: self.peer_id,
+                expires: 0,
+            });
+
+            let _ = tx.send(task_announcement).await;
+        }
         Ok(())
     }
 

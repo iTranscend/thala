@@ -9,12 +9,10 @@ use node::{Node, NodeConfig};
 use shared::tracing::{TracingConfig, init_tracing};
 
 mod cli;
-mod error;
 mod identity;
 mod message;
 mod node;
 mod types;
-mod validation;
 
 #[tokio::main]
 async fn main() -> Result<!, Box<dyn Error>> {
