@@ -1,11 +1,19 @@
-use std::net::SocketAddr;
+use std::{
+    hash::Hash,
+    net::SocketAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use jsonrpsee::{IntoResponse, ResponsePayload};
 use litep2p::PeerId;
 use serde::{Deserialize, Serialize};
+use tracing::{Level, event};
 use uuid::Uuid;
 
-use crate::{error::ValidationError, validation::Validate};
+use crate::{
+    error::ValidationError,
+    validation::{MIN_TASK_EXPIRATION_TIME, Validate},
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeInfo {
@@ -14,6 +22,7 @@ pub struct NodeInfo {
     pub connections: usize,
     pub listen_addr: SocketAddr,
     pub rpc_addr: Option<SocketAddr>,
+    pub capabilities: Capabilities,
 }
 
 impl IntoResponse for NodeInfo {
@@ -30,6 +39,7 @@ pub struct Capabilities {
     pub memory: u64,
     pub nvidia_gpus: Vec<GraphicCard>,
     pub supported_models: Vec<String>,
+    pub supported_datasets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +52,7 @@ pub struct GraphicCard {
     pub compute_mode: nvml_wrapper::enum_wrappers::device::ComputeMode,
 }
 
-#[derive(Clone, Deserialize, Debug, Serialize)]
+#[derive(Clone, Copy, Deserialize, Debug, Serialize, Hash, PartialEq, Eq)]
 pub struct TaskId {
     id: Uuid,
 }
@@ -87,20 +97,49 @@ pub enum TaskStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
     id: TaskId,
-    _type: TaskType,
+    kind: TaskType,
     status: TaskStatus,
+    expires: u64,
 }
 
 impl Task {
-    pub fn new(id: TaskId, _type: TaskType) -> Self {
+    pub fn new(id: TaskId, kind: TaskType, expires: u64) -> Self {
         Task {
             id,
-            _type,
+            kind,
             status: TaskStatus::Pending,
+            expires,
         }
     }
 
-    pub fn id(&self) -> &TaskId {
-        &self.id
+    pub fn id(&self) -> TaskId {
+        self.id
+    }
+
+    pub fn kind(&self) -> &TaskType {
+        &self.kind
+    }
+}
+
+impl Validate for Task {
+    type Error = ValidationError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        if self.expires
+            - SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+            < MIN_TASK_EXPIRATION_TIME
+        {
+            event!(
+                Level::ERROR,
+                "Task expiration time is too short: {}",
+                self.expires
+            );
+            Err(ValidationError::InvalidExpires)
+        } else {
+            Ok(())
+        }
     }
 }

@@ -33,7 +33,6 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "1.19.0", features = ["serde"] }
 
-
 [package]
 name = "thala"
 version.workspace = true
@@ -53,4 +52,3 @@ serde.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-uuid.workspace = true

@@ -2,11 +2,15 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use litep2p::PeerId;
 use serde::{Deserialize, Serialize};
-use shared::{types::{Capabilities,Task, TaskId}, validation::{Validate, MIN_TASK_EXPIRATION_TIME}, error::ValidationError};
+use shared::{
+    error::ValidationError,
+    types::{Capabilities, Task, TaskId},
+    validation::Validate,
+};
 
-use crate::types::{ TaskResultData};
+use crate::types::TaskResultData;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConnectionResp {
     pub peer_id: PeerId,
     pub listen_addr: SocketAddr,
@@ -15,7 +19,7 @@ pub struct ConnectionResp {
     pub capabilities: Capabilities,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConnectionReq {
     pub peer_id: PeerId,
     pub listen_addr: SocketAddr,
@@ -23,30 +27,23 @@ pub struct ConnectionReq {
     pub capabilities: Capabilities,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Coordinator {
+    pub peer_id: PeerId,
+    pub addr: SocketAddr,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskAnnouncement {
     pub task: Task,
-    pub coordinator: PeerId,
-    pub expires: u64,
+    pub coordinator: Coordinator,
 }
 
-impl Validate for TaskAnnouncement {
-    type Error = ValidationError;
-
-    fn validate(&self) -> Result<(), Self::Error> {
-        if self.expires < MIN_TASK_EXPIRATION_TIME {
-            Err(ValidationError::InvalidExpires)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskClaim {
-    task_id: TaskId,
-    worker_id: PeerId,
-    estimated_duration: u64,
+    pub task_id: TaskId,
+    pub worker_id: PeerId,
+    pub estimated_duration: u64,
 }
 
 impl Validate for TaskClaim {
@@ -54,11 +51,12 @@ impl Validate for TaskClaim {
 
     fn validate(&self) -> Result<(), Self::Error> {
         // TODO: validate claimer's capabilities
-        todo!()
+        println!("Validate taskClaim");
+        Ok(())
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskResult {
     task_id: TaskId,
     result: TaskResultData,
@@ -75,7 +73,7 @@ impl Validate for TaskResult {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     ConnectToPeerReq(ConnectionReq),
     ConnectToPeerResp(ConnectionResp),

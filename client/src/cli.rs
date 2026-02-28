@@ -25,6 +25,13 @@ pub enum Command {
     Task(Task),
 }
 
+#[derive(Parser)]
+pub struct TaskOptions {
+    /// Task expiration in seconds from now (default: 3600)
+    #[clap(short, long, default_value = "3600")]
+    pub expires: u64,
+}
+
 #[derive(Subcommand)]
 pub enum Task {
     /// Run benchmark
@@ -33,6 +40,8 @@ pub enum Task {
 
 #[derive(Parser)]
 pub struct Benchmark {
+    #[clap(flatten)]
+    pub options: TaskOptions,
     /// AI model
     #[clap(short, long)]
     pub model: String,

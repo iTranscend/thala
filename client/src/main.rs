@@ -1,4 +1,7 @@
-use std::error::Error;
+use std::{
+    error::Error,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use clap::Parser;
 use jsonrpsee::{
@@ -68,14 +71,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             cli::Task::Benchmark(benchmark) => {
                 let model = benchmark.model;
                 let dataset = benchmark.dataset;
+                let expires = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + benchmark.options.expires;
 
                 let task_type = TaskType::Benchmark { model, dataset };
-                let task = Task::new(TaskId::new(), task_type);
+                let task = Task::new(TaskId::new(), task_type, expires);
                 println!("New Benchmark task created: {:?}", task.id());
 
                 event!(Level::DEBUG, "broadcast_task RPC call made to {:?}", &rpc);
-                let res: bool = client.request("broadcast_task", rpc_params!(task)).await?;
-                println!("{:#?}", res);
+                let res: bool = client.request("broadcast_task", rpc_params![task]).await?;
+
+                if res {
+                    println!("Task broadcasted successfully");
+                } else {
+                    println!("Failed to broadcast task");
+                }
             }
         },
     }

@@ -11,7 +11,7 @@ use litep2p::PeerId;
 use litep2p::crypto::PublicKey;
 use nvml_wrapper::Nvml;
 use shared::{
-    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId},
+    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId, TaskType},
     validation::Validate,
 };
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -27,7 +27,7 @@ use tracing::{Level, event, span};
 
 use crate::{
     identity::IdentityManager,
-    message::{ConnectionReq, ConnectionResp, Message, TaskAnnouncement},
+    message::{ConnectionReq, ConnectionResp, Coordinator, Message, TaskAnnouncement, TaskClaim},
 };
 
 pub struct NodeConfig {
@@ -37,6 +37,8 @@ pub struct NodeConfig {
     pub reconnection_retries_cap: u32,
     pub rpc_addr: Option<SocketAddr>,
     pub data_dir: PathBuf,
+    pub models: Vec<String>,
+    pub datasets: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,11 +92,13 @@ pub struct Node {
     /// Node configuration
     config: NodeConfig,
     /// Seen tasks
-    seen_tasks: HashSet<TaskId>,
-    /// Pending tasks
-    pending_tasks: HashMap<TaskId, Task>,
+    seen_tasks: Arc<RwLock<HashSet<TaskId>>>,
+    /// Pending tasks: received tasks that node node is capable of processing but is waiting for an ack to process
+    pending_tasks: Arc<RwLock<HashMap<TaskId, Task>>>,
     /// Queue for tasks
-    task_queue: VecDeque<TaskId>,
+    _task_queue: VecDeque<TaskId>,
+    /// Peers we are trying to connect to
+    pending_connections: Arc<RwLock<Vec<SocketAddr>>>,
 }
 
 impl Node {
@@ -155,16 +159,18 @@ impl Node {
             bootstrap_node,
             connections: Arc::new(RwLock::new(HashMap::new())),
             known_peers: Arc::new(RwLock::new(HashMap::new())),
-            config,
             capabilities: Capabilities {
-                cpu_cores: sys.cpus().len().clone(),
+                cpu_cores: sys.cpus().len(),
                 memory: sys.total_memory() / 1_000_000_000,
                 nvidia_gpus,
-                supported_models: vec![],
+                supported_models: config.models.clone(),
+                supported_datasets: config.datasets.clone(),
             },
-            seen_tasks: HashSet::new(),
-            pending_tasks: HashMap::new(),
-            task_queue: VecDeque::new(),
+            config,
+            seen_tasks: Arc::new(RwLock::new(HashSet::new())),
+            pending_tasks: Arc::new(RwLock::new(HashMap::new())),
+            _task_queue: VecDeque::new(),
+            pending_connections: Arc::new(RwLock::new(Vec::new())),
         }))
     }
 
@@ -175,6 +181,7 @@ impl Node {
             connections: self.connections.read().await.len(),
             listen_addr: self.listener.local_addr()?,
             rpc_addr: self.config.rpc_addr,
+            capabilities: self.capabilities.clone(),
         })
     }
 
@@ -189,6 +196,7 @@ impl Node {
             let this = self.clone();
             tokio::spawn(async move {
                 let mut failed_peer_id = None;
+
                 if let Err(err) = this
                     .connect_to_peer(&bootstrap_node, &mut failed_peer_id)
                     .await
@@ -210,6 +218,23 @@ impl Node {
             // Spawn a background task to run rpc server
             tokio::spawn(async move { this.start_rpc_server(rpc_addr).await });
         }
+
+        // Spawn a task to drain pending_connections
+        let this = self.clone();
+        tokio::spawn(async move {
+            event!(Level::INFO, "Task spawned to drain pending connections");
+            loop {
+                let addr = this.pending_connections.write().await.pop();
+                if let Some(addr) = addr {
+                    let this = this.clone();
+                    tokio::spawn(async move {
+                        let mut failed_peer_id = None;
+                        let _ = this.connect_to_peer(&addr, &mut failed_peer_id);
+                    });
+                }
+                // tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
 
         // main loop to continuously listen for new tcp connections
         let this = self.clone();
@@ -409,10 +434,72 @@ impl Node {
                 );
             }
             Message::TaskAnnouncement(task_announcement) => {
-                task_announcement.validate()?;
+                event!(
+                    Level::INFO,
+                    "Received task announcement from peer {:#?}",
+                    task_announcement
+                );
+                let _ = task_announcement.task.validate();
+
+                // add to seen_tasks
+                self.seen_tasks
+                    .write()
+                    .await
+                    .insert(task_announcement.task.id());
+
+                // check if node is capable
+                if self.is_capable(&task_announcement.task) {
+                    // send claim to coordinator
+                    // TODO: if coordinator is msg sender, skip connections search and claim
+
+                    // if a connection to coordinator does not exist, create one
+                    let coordinator_peer_id = task_announcement.coordinator.peer_id;
+                    let coordinator_addr = task_announcement.coordinator.addr;
+
+                    let needs_connection = !self
+                        .connections
+                        .read()
+                        .await
+                        .contains_key(&coordinator_peer_id);
+
+                    event!(
+                        Level::INFO,
+                        "needs_connection to coordinator: {}",
+                        needs_connection
+                    );
+
+                    if needs_connection {
+                        // spawn a new thread to connect to peer
+                        self.pending_connections
+                            .write()
+                            .await
+                            .push(coordinator_addr);
+                    }
+
+                    // send claim
+                    if let Some((_, tx)) = self.connections.read().await.get(&coordinator_peer_id) {
+                        event!(Level::INFO, "coordinator connection exists");
+                        event!(Level::INFO, "sending taskClaim to coordinator");
+                        let msg = Message::TaskClaim(TaskClaim {
+                            task_id: task_announcement.task.id(),
+                            worker_id: self.peer_id,
+                            estimated_duration: 90, // Todo: implement estimation
+                        });
+                        tx.send(msg).await?;
+                    }
+
+                    // add to pending
+                    self.pending_tasks
+                        .write()
+                        .await
+                        .insert(task_announcement.task.id(), task_announcement.task);
+
+                    // TODO: rebroadcast
+                }
             }
             Message::TaskClaim(task_claim) => {
                 task_claim.validate()?;
+                println!("Task claim received!!");
             }
             Message::TaskResult(task_result) => {
                 task_result.validate()?;
@@ -574,14 +661,14 @@ impl Node {
         // broadcast_task RPC endpoint
         let this = self.clone();
         module.register_async_method("broadcast_task", move |params, _, _| {
-            println!("trrr");
-            // extract params
-            let task = params.parse::<Task>().unwrap();
+            let task = params.one::<Task>().unwrap();
 
             let this = this.clone();
             async move {
-                let _ = this.broadcast_task(task).await.unwrap();
-                ()
+                match this.broadcast_task(task).await {
+                    Ok(_) => true,
+                    Err(_) => false,
+                }
             }
         })?;
 
@@ -596,16 +683,18 @@ impl Node {
     async fn broadcast_task(&self, task: Task) -> anyhow::Result<()> {
         let connections = self.connections.read().await.clone();
 
+        let task_announcement = Message::TaskAnnouncement(TaskAnnouncement {
+            task: task,
+            coordinator: Coordinator {
+                peer_id: self.peer_id,
+                addr: self.addr,
+            },
+        });
+
         for connection in connections {
             let (_, (_, tx)) = connection;
 
-            let task_announcement = Message::TaskAnnouncement(TaskAnnouncement {
-                task: task.clone(),
-                coordinator: self.peer_id,
-                expires: 0,
-            });
-
-            let _ = tx.send(task_announcement).await;
+            let _ = tx.send(task_announcement.clone()).await;
         }
         Ok(())
     }
@@ -619,5 +708,20 @@ impl Node {
     async fn serialize(message: Message) -> anyhow::Result<Vec<u8>> {
         let bytes = postcard::to_stdvec(&message)?;
         Ok(bytes)
+    }
+
+    fn is_capable(&self, task: &Task) -> bool {
+        match task.kind() {
+            TaskType::Benchmark { model, dataset } => {
+                if self.capabilities.supported_models.contains(model)
+                    && self.capabilities.supported_datasets.contains(dataset)
+                {
+                    return true;
+                }
+                false
+            }
+            TaskType::Training => todo!(),
+            TaskType::Inference => todo!(),
+        }
     }
 }

@@ -38,6 +38,8 @@ async fn main() -> Result<!, Box<dyn Error>> {
         reconnection_retries_cap: args.reconnection_retries_cap,
         rpc_addr: args.rpc_addr,
         data_dir: args.data_dir(),
+        models: args.models,
+        datasets: args.datasets,
     };
 
     let node = Node::new(args.listen_address, args.bootstrap_node, config).await?;

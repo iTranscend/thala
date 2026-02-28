@@ -35,6 +35,14 @@ pub struct Args {
     /// Data directory path (default: ~/.thala)
     #[clap(short, long)]
     pub data_dir: Option<PathBuf>,
+
+    /// Supported models
+    #[clap(short = 'a', long, value_delimiter = ',', default_value = "resnet50")]
+    pub models: Vec<String>,
+
+    /// Supported datasets
+    #[clap(short = 'q', long, value_delimiter = ',', default_value = "gpqa")]
+    pub datasets: Vec<String>,
 }
 
 impl Args {

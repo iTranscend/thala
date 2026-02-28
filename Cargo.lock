@@ -2691,7 +2691,6 @@ dependencies = [
  "sysinfo",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -2703,7 +2702,6 @@ dependencies = [
  "shared",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
