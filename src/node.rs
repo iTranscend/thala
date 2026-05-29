@@ -19,7 +19,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
-        RwLock,
+        Mutex, RwLock,
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -74,6 +74,11 @@ impl std::fmt::Display for PeerInfo {
     }
 }
 
+struct PendingConnectionsChannel {
+    sender: Sender<SocketAddr>,
+    receiver: Mutex<Receiver<SocketAddr>>,
+}
+
 pub struct Node {
     /// Peer ID
     peer_id: PeerId,
@@ -97,8 +102,8 @@ pub struct Node {
     pending_tasks: Arc<RwLock<HashMap<TaskId, Task>>>,
     /// Queue for tasks
     _task_queue: VecDeque<TaskId>,
-    /// Peers we are trying to connect to
-    pending_connections: Arc<RwLock<Vec<SocketAddr>>>,
+    /// Channel for sending addresses of peers we are trying to connect to
+    pending_connections_channel: PendingConnectionsChannel,
 }
 
 impl Node {
@@ -114,6 +119,9 @@ impl Node {
 
         let peer_id = PeerId::from_public_key(&PublicKey::Ed25519(keypair.public()));
         event!(Level::INFO, "PeerID: {}", peer_id);
+
+        // pending connections channel
+        let (pending_tx, pending_rx) = mpsc::channel::<SocketAddr>(32);
 
         // get node hardware capabilities
         let memory_refresh_kind = MemoryRefreshKind::nothing();
@@ -170,7 +178,10 @@ impl Node {
             seen_tasks: Arc::new(RwLock::new(HashSet::new())),
             pending_tasks: Arc::new(RwLock::new(HashMap::new())),
             _task_queue: VecDeque::new(),
-            pending_connections: Arc::new(RwLock::new(Vec::new())),
+            pending_connections_channel: PendingConnectionsChannel {
+                sender: pending_tx,
+                receiver: Mutex::new(pending_rx),
+            },
         }))
     }
 
@@ -223,16 +234,19 @@ impl Node {
         let this = self.clone();
         tokio::spawn(async move {
             event!(Level::INFO, "Task spawned to drain pending connections");
-            loop {
-                let addr = this.pending_connections.write().await.pop();
-                if let Some(addr) = addr {
-                    let this = this.clone();
-                    tokio::spawn(async move {
-                        let mut failed_peer_id = None;
-                        let _ = this.connect_to_peer(&addr, &mut failed_peer_id);
-                    });
-                }
-                // tokio::time::sleep(Duration::from_millis(100)).await;
+            while let Some(addr) = this
+                .pending_connections_channel
+                .receiver
+                .lock()
+                .await
+                .recv()
+                .await
+            {
+                let this = this.clone();
+                tokio::spawn(async move {
+                    let mut failed_peer_id = None;
+                    let _ = this.connect_to_peer(&addr, &mut failed_peer_id).await;
+                });
             }
         });
 
@@ -470,10 +484,10 @@ impl Node {
 
                     if needs_connection {
                         // spawn a new thread to connect to peer
-                        self.pending_connections
-                            .write()
-                            .await
-                            .push(coordinator_addr);
+                        self.pending_connections_channel
+                            .sender
+                            .send(coordinator_addr)
+                            .await?;
                     }
 
                     // send claim
