@@ -30,6 +30,8 @@ use crate::{
     message::{ConnectionReq, ConnectionResp, Coordinator, Message, TaskAnnouncement, TaskClaim},
 };
 
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB
+
 pub struct NodeConfig {
     pub peer_reconnection_interval: Duration,
     pub max_backoff_interval: Duration,
@@ -290,9 +292,7 @@ impl Node {
             capabilities: self.capabilities.clone(),
         });
 
-        let message_bytes = Self::serialize(message).await?;
-
-        stream.write_all(&message_bytes).await?;
+        Self::send_message(&mut stream, message).await?;
 
         self.handle_peer_connection(stream, peer_id).await?;
 
@@ -309,21 +309,31 @@ impl Node {
 
         // function to receive messages over peer's stream
         let recv = async |stream: &mut TcpStream| {
-            let mut buffer = [0; 1024];
+            let mut len_buf = [0u8; 4];
+            match stream.read_exact(&mut len_buf).await {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(e) => return Err(anyhow::anyhow!("Read error: {}", e)),
+            }
 
-            let n = stream
-                .read(&mut buffer)
+            let len = u32::from_be_bytes(len_buf) as usize;
+
+            if len > MAX_MESSAGE_SIZE {
+                return Err(anyhow::anyhow!(
+                    "Message too large: {} bytes (max {})",
+                    len,
+                    MAX_MESSAGE_SIZE
+                ));
+            }
+
+            let mut buf = vec![0u8; len];
+            stream
+                .read_exact(&mut buf)
                 .await
                 .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
 
-            if n == 0 {
-                return Ok(None);
-            }
-
-            // n+1 because postcard expects the byte slice to be larger than the message being decoded
-            let decoded_slice: Message = postcard::from_bytes(&buffer[..n + 1])?;
-
-            anyhow::Ok(Some((decoded_slice, n)))
+            let message: Message = postcard::from_bytes(&buf)?;
+            anyhow::Ok(Some((message, len)))
         };
 
         // Configure heartbeat
@@ -714,14 +724,13 @@ impl Node {
     }
 
     async fn send_message(stream: &mut TcpStream, message: Message) -> anyhow::Result<()> {
-        let bytes = Self::serialize(message).await?;
-        let _ = stream.write(&bytes).await?;
+        let payload = postcard::to_stdvec(&message)?;
+        let len = (payload.len() as u32).to_be_bytes();
+        let mut framed = Vec::with_capacity(4 + payload.len());
+        framed.extend_from_slice(&len);
+        framed.extend_from_slice(&payload);
+        stream.write_all(&framed).await?;
         Ok(())
-    }
-
-    async fn serialize(message: Message) -> anyhow::Result<Vec<u8>> {
-        let bytes = postcard::to_stdvec(&message)?;
-        Ok(bytes)
     }
 
     fn is_capable(&self, task: &Task) -> bool {
