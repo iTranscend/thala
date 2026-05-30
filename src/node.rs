@@ -689,6 +689,7 @@ impl Node {
 
             let this = this.clone();
             async move {
+                event!(Level::INFO, "Task received from client: {:?}", task.id());
                 match this.broadcast_task(task).await {
                     Ok(_) => true,
                     Err(_) => false,
@@ -706,6 +707,13 @@ impl Node {
 
     async fn broadcast_task(&self, task: Task) -> anyhow::Result<()> {
         let connections = self.connections.read().await.clone();
+
+        event!(
+            Level::INFO,
+            "Broadcasting task {:?} to {} peer(s)",
+            task.id(),
+            connections.len()
+        );
 
         let task_announcement = Message::TaskAnnouncement(TaskAnnouncement {
             task: task,
