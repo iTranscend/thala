@@ -125,13 +125,12 @@ impl Validate for Task {
     type Error = ValidationError;
 
     fn validate(&self) -> Result<(), Self::Error> {
-        if self.expires
-            - SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-            < MIN_TASK_EXPIRATION_TIME
-        {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let remaining = self.expires.saturating_sub(now);
+        if remaining < MIN_TASK_EXPIRATION_TIME {
             event!(
                 Level::ERROR,
                 "Task expiration time is too short: {}",
