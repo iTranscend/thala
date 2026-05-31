@@ -106,6 +106,8 @@ pub struct Node {
     _task_queue: VecDeque<TaskId>,
     /// Channel for sending addresses of peers we are trying to connect to
     pending_connections_channel: PendingConnectionsChannel,
+    /// Tracks which worker (PeerId) was assigned each task
+    task_assignments: Arc<RwLock<HashMap<TaskId, PeerId>>>,
 }
 
 impl Node {
@@ -184,6 +186,7 @@ impl Node {
                 sender: pending_tx,
                 receiver: Mutex::new(pending_rx),
             },
+            task_assignments: Arc::new(RwLock::new(HashMap::new())),
         }))
     }
 
@@ -531,10 +534,52 @@ impl Node {
             }
             Message::TaskClaim(task_claim) => {
                 task_claim.validate()?;
-                println!("Task claim received!!");
+                self.task_assignments
+                    .write()
+                    .await
+                    .insert(task_claim.task_id, task_claim.worker_id);
+                event!(
+                    Level::INFO,
+                    "Task {:?} assigned to worker {:?}",
+                    task_claim.task_id,
+                    task_claim.worker_id
+                );
             }
             Message::TaskResult(task_result) => {
                 task_result.validate()?;
+                let assigned = self
+                    .task_assignments
+                    .read()
+                    .await
+                    .get(&task_result.task_id)
+                    .copied();
+                match assigned {
+                    Some(expected) if expected == task_result.worker_id => {
+                        event!(
+                            Level::INFO,
+                            "TaskResult received from assigned worker {:?}",
+                            task_result.worker_id
+                        );
+                    }
+                    Some(expected) => {
+                        event!(
+                            Level::WARN,
+                            "TaskResult worker_id mismatch for task {:?}: expected {:?}, got {:?}",
+                            task_result.task_id,
+                            expected,
+                            task_result.worker_id
+                        );
+                        return Ok(());
+                    }
+                    None => {
+                        event!(
+                            Level::WARN,
+                            "TaskResult received for unknown/unassigned task {:?}",
+                            task_result.task_id
+                        );
+                        return Ok(());
+                    }
+                }
             }
         };
 

@@ -58,18 +58,19 @@ impl Validate for TaskClaim {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskResult {
-    task_id: TaskId,
-    result: TaskResultData,
-    worker_id: PeerId,
-    execution_time_ms: u64,
+    pub task_id: TaskId,
+    pub result: TaskResultData,
+    pub worker_id: PeerId,
+    pub execution_time_ms: u64,
 }
 
 impl Validate for TaskResult {
     type Error = ValidationError;
 
     fn validate(&self) -> Result<(), Self::Error> {
-        // TODO: verify that result is from peer that claimed task.
-        todo!()
+        // Structural validation only — assignment verification requires Node context
+        // and is performed in the TaskResult message handler.
+        Ok(())
     }
 }
 
