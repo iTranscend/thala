@@ -463,7 +463,15 @@ impl Node {
                     "Received task announcement from peer {:#?}",
                     task_announcement
                 );
-                let _ = task_announcement.task.validate();
+                if let Err(e) = task_announcement.task.validate() {
+                    event!(
+                        Level::WARN,
+                        "Rejecting invalid task {:?}: {}",
+                        task_announcement.task.id(),
+                        e
+                    );
+                    return Ok(());
+                }
 
                 // add to seen_tasks
                 self.seen_tasks
