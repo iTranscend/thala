@@ -5,6 +5,7 @@ pub enum ValidationError {
     InvalidTaskId,
     _ExpiredTask(u64),
     InvalidExpires,
+    InvalidExecutionTime,
 }
 
 impl fmt::Display for ValidationError {
@@ -15,6 +16,7 @@ impl fmt::Display for ValidationError {
                 write!(f, "Task expired at {}", expiration_time)
             }
             ValidationError::InvalidExpires => write!(f, "Invalid expiration time"),
+            ValidationError::InvalidExecutionTime => write!(f, "Invalid execution time"),
         }
     }
 }

@@ -235,6 +235,10 @@ impl Node {
             tokio::spawn(async move { this.start_rpc_server(rpc_addr).await });
         }
 
+        // Spawn a background task to sweep expired tasks from assignment and pending maps
+        let this = self.clone();
+        tokio::spawn(async move { this.expired_task_sweep().await });
+
         // Spawn a task to drain pending_connections
         let this = self.clone();
         tokio::spawn(async move {
@@ -547,6 +551,29 @@ impl Node {
             }
             Message::TaskResult(task_result) => {
                 task_result.validate()?;
+
+                // Verify the sender is who they claim to be — the peer_id established
+                // during the handshake must match the worker_id in the result.
+                let sender_id = match peer_id {
+                    Some(id) => *id,
+                    None => {
+                        event!(
+                            Level::WARN,
+                            "TaskResult received from peer with no established identity"
+                        );
+                        return Ok(());
+                    }
+                };
+                if sender_id != task_result.worker_id {
+                    event!(
+                        Level::WARN,
+                        "TaskResult sender {:?} does not match claimed worker_id {:?}",
+                        sender_id,
+                        task_result.worker_id
+                    );
+                    return Ok(());
+                }
+
                 let assigned = self
                     .task_assignments
                     .read()
@@ -560,6 +587,15 @@ impl Node {
                             "TaskResult received from assigned worker {:?}",
                             task_result.worker_id
                         );
+                        self.task_assignments
+                            .write()
+                            .await
+                            .remove(&task_result.task_id);
+                        self.pending_tasks
+                            .write()
+                            .await
+                            .remove(&task_result.task_id);
+                        // TODO: forward result to task submitter
                     }
                     Some(expected) => {
                         event!(
@@ -584,6 +620,40 @@ impl Node {
         };
 
         Ok(())
+    }
+
+    async fn expired_task_sweep(self: Arc<Self>) -> anyhow::Result<!> {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let expired_ids: Vec<TaskId> = self
+                .pending_tasks
+                .read()
+                .await
+                .iter()
+                .filter(|(_, task)| task.expires() <= now)
+                .map(|(id, _)| *id)
+                .collect();
+
+            if !expired_ids.is_empty() {
+                let mut pending = self.pending_tasks.write().await;
+                let mut assignments = self.task_assignments.write().await;
+                for id in &expired_ids {
+                    pending.remove(id);
+                    assignments.remove(id);
+                }
+                event!(
+                    Level::INFO,
+                    "Swept {} expired task(s) from pending and assignment maps",
+                    expired_ids.len()
+                );
+            }
+        }
     }
 
     async fn inactive_peer_reconnection(self: Arc<Self>) -> anyhow::Result<!> {

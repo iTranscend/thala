@@ -119,6 +119,10 @@ impl Task {
     pub fn kind(&self) -> &TaskType {
         &self.kind
     }
+
+    pub fn expires(&self) -> u64 {
+        self.expires
+    }
 }
 
 impl Validate for Task {
