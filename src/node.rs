@@ -480,11 +480,15 @@ impl Node {
                     return Ok(());
                 }
 
-                // add to seen_tasks
-                self.seen_tasks
+                // skip if already seen
+                if !self
+                    .seen_tasks
                     .write()
                     .await
-                    .insert(task_announcement.task.id());
+                    .insert(task_announcement.task.id())
+                {
+                    return Ok(());
+                }
 
                 // check if node is capable
                 if self.is_capable(&task_announcement.task) {
@@ -878,4 +882,61 @@ impl Node {
             TaskType::Inference => todo!(),
         }
     }
+}
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use litep2p::crypto::{PublicKey, ed25519::Keypair as Ed25519Keypair};
+    use shared::types::{Capabilities, Task, TaskId, TaskType};
+
+    use super::*;
+    use crate::message::{Coordinator, TaskAnnouncement};
+
+    fn test_capabilities() -> Capabilities {
+        Capabilities {
+            cpu_cores: 1,
+            memory: 8,
+            nvidia_gpus: vec![],
+            supported_models: vec![],
+            supported_datasets: vec![],
+        }
+    }
+
+    fn test_config(dir_suffix: &str) -> NodeConfig {
+        NodeConfig {
+            peer_reconnection_interval: Duration::from_secs(3600),
+            max_backoff_interval: Duration::from_secs(60),
+            backoff_multiplier: 2.0,
+            reconnection_retries_cap: 3,
+            rpc_addr: None,
+            data_dir: std::env::temp_dir().join(format!("thala_test_{}", dir_suffix)),
+            models: vec![],
+            datasets: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_seen_tasks_dedup() {
+        let node = Node::new(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            test_config("seen_tasks"),
+        )
+        .await
+        .unwrap();
+
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 120;
+        let task = Task::new(
+            TaskId::new(),
+            TaskType::Benchmark {
+                model: "unsupported".to_string(),
+                dataset: "unsupported".to_string(),
+            },
+            expires,
+        );
 }
