@@ -85,3 +85,127 @@ pub enum Message {
     TaskClaim(TaskClaim),
     TaskResult(TaskResult),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use litep2p::PeerId;
+    use litep2p::crypto::{PublicKey, ed25519::Keypair};
+    use shared::types::{Task, TaskId, TaskType};
+
+    use super::*;
+    use crate::types::TaskResultData;
+
+    fn peer_id() -> PeerId {
+        PeerId::from_public_key(&PublicKey::Ed25519(Keypair::generate().public()))
+    }
+
+    fn capabilities() -> Capabilities {
+        Capabilities {
+            cpu_cores: 4,
+            memory: 16,
+            nvidia_gpus: vec![],
+            supported_models: vec!["m".to_string()],
+            supported_datasets: vec!["d".to_string()],
+        }
+    }
+
+    fn addr() -> SocketAddr {
+        "127.0.0.1:2345".parse().unwrap()
+    }
+
+    fn sample_task() -> Task {
+        Task::new(
+            TaskId::new(),
+            TaskType::Benchmark {
+                model: "m".to_string(),
+                dataset: "d".to_string(),
+            },
+            9_999_999_999,
+        )
+    }
+
+    /// Assert a Message survives a postcard encode/decode/re-encode cycle.
+    /// Message has no PartialEq, so we compare the encoded byte payloads.
+    fn assert_round_trip(msg: Message) {
+        let bytes = postcard::to_stdvec(&msg).expect("serialize");
+        let decoded: Message = postcard::from_bytes(&bytes).expect("deserialize");
+        let reencoded = postcard::to_stdvec(&decoded).expect("re-serialize");
+        assert_eq!(bytes, reencoded);
+    }
+
+    #[test]
+    fn round_trip_connect_req() {
+        assert_round_trip(Message::ConnectToPeerReq(ConnectionReq {
+            peer_id: peer_id(),
+            listen_addr: addr(),
+            message: Some("hi".to_string()),
+            capabilities: capabilities(),
+        }));
+    }
+
+    #[test]
+    fn round_trip_connect_resp() {
+        let mut known_peers = HashMap::new();
+        known_peers.insert(peer_id(), (addr(), capabilities()));
+        assert_round_trip(Message::ConnectToPeerResp(ConnectionResp {
+            peer_id: peer_id(),
+            listen_addr: addr(),
+            known_peers,
+            message: None,
+            capabilities: capabilities(),
+        }));
+    }
+
+    #[test]
+    fn round_trip_ping_pong() {
+        assert_round_trip(Message::Ping {
+            timestamp_millis: 42,
+        });
+        assert_round_trip(Message::Pong {
+            timestamp_millis: 42,
+        });
+    }
+
+    #[test]
+    fn round_trip_task_announcement() {
+        assert_round_trip(Message::TaskAnnouncement(TaskAnnouncement {
+            task: sample_task(),
+            coordinator: Coordinator {
+                peer_id: peer_id(),
+                addr: addr(),
+            },
+        }));
+    }
+
+    #[test]
+    fn round_trip_task_claim() {
+        assert_round_trip(Message::TaskClaim(TaskClaim {
+            task_id: TaskId::new(),
+            worker_id: peer_id(),
+            estimated_duration: 90,
+        }));
+    }
+
+    #[test]
+    fn round_trip_task_result() {
+        assert_round_trip(Message::TaskResult(TaskResult {
+            task_id: TaskId::new(),
+            result: TaskResultData::Success {
+                output: vec![1, 2, 3],
+            },
+            worker_id: peer_id(),
+            execution_time_ms: 1234,
+        }));
+        assert_round_trip(Message::TaskResult(TaskResult {
+            task_id: TaskId::new(),
+            result: TaskResultData::Failure {
+                error: "boom".to_string(),
+                output: None,
+            },
+            worker_id: peer_id(),
+            execution_time_ms: 5,
+        }));
+    }
+}
