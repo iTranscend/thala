@@ -58,3 +58,48 @@ impl IdentityManager {
         Ok(Keypair::from(secret_key))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir(suffix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("thala_identity_{}_{}", suffix, nanos))
+    }
+
+    #[test]
+    fn keypair_save_load_round_trip() {
+        let dir = unique_temp_dir("round_trip");
+        let manager = IdentityManager::new(dir.clone()).unwrap();
+
+        // First call generates and persists the keypair.
+        let generated = manager.load_or_generate_keypair().unwrap();
+        // Second call loads the persisted keypair from disk.
+        let loaded = manager.load_or_generate_keypair().unwrap();
+
+        assert_eq!(
+            generated.secret().to_bytes(),
+            loaded.secret().to_bytes(),
+            "reloaded keypair must match the generated one"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_load_matches_generated() {
+        let dir = unique_temp_dir("explicit");
+        let manager = IdentityManager::new(dir.clone()).unwrap();
+
+        let generated = manager.load_or_generate_keypair().unwrap();
+        let loaded = manager.load_keypair(&dir.join("node-key")).unwrap();
+
+        assert_eq!(generated.secret().to_bytes(), loaded.secret().to_bytes());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+}
