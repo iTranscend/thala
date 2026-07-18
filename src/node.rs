@@ -23,7 +23,7 @@ use tokio::{
         mpsc::{self, Receiver, Sender},
     },
 };
-use tracing::{Level, event, span};
+use tracing::{Level, event};
 
 use crate::{
     identity::IdentityManager,
@@ -201,8 +201,9 @@ impl Node {
         })
     }
 
+
+    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn start(self: Arc<Self>) -> anyhow::Result<!> {
-        let _span = span!(Level::TRACE, "start").entered();
         if let Some(bootstrap_node) = self.bootstrap_node {
             event!(
                 Level::INFO,
@@ -660,9 +661,8 @@ impl Node {
         }
     }
 
+    #[tracing::instrument(level = "debug", name = "peer_reconnection_loop", skip(self))]
     async fn inactive_peer_reconnection(self: Arc<Self>) -> anyhow::Result<!> {
-        let span = span!(Level::DEBUG, "peer_reconnection_loop");
-        let _enter = span.enter();
         loop {
             event!(Level::INFO, "peer reconnection loop");
 
@@ -753,8 +753,8 @@ impl Node {
         }
     }
 
+    #[tracing::instrument(level = "debug", name = "rpc_server", skip(self))]
     async fn start_rpc_server(self: Arc<Self>, addr: SocketAddr) -> anyhow::Result<()> {
-        // let _span = span!(Level::DEBUG, "rpc-server").entered();
         event!(Level::INFO, "Starting RPC server");
 
         let server = Server::builder().build(addr).await?;
