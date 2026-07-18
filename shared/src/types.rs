@@ -146,3 +146,66 @@ impl Validate for Task {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn benchmark_task(expires: u64) -> Task {
+        Task::new(
+            TaskId::new(),
+            TaskType::Benchmark {
+                model: "m".to_string(),
+                dataset: "d".to_string(),
+            },
+            expires,
+        )
+    }
+
+    #[test]
+    fn task_validate_accepts_valid_expiry() {
+        let task = benchmark_task(now_secs() + 120);
+        assert!(task.validate().is_ok());
+    }
+
+    #[test]
+    fn task_validate_rejects_expiry_below_minimum() {
+        // Expires within the minimum window -> rejected.
+        let task = benchmark_task(now_secs() + 10);
+        assert!(matches!(
+            task.validate(),
+            Err(ValidationError::InvalidExpires)
+        ));
+    }
+
+    #[test]
+    fn task_validate_handles_underflow_without_panic() {
+        // expires far in the past -> saturating_sub yields 0, no panic, rejected.
+        let task = benchmark_task(0);
+        assert!(matches!(
+            task.validate(),
+            Err(ValidationError::InvalidExpires)
+        ));
+    }
+
+    #[test]
+    fn task_id_validate_rejects_nil() {
+        let nil = TaskId { id: Uuid::nil() };
+        assert!(matches!(
+            nil.validate(),
+            Err(ValidationError::InvalidTaskId)
+        ));
+    }
+
+    #[test]
+    fn task_id_validate_accepts_random() {
+        assert!(TaskId::new().validate().is_ok());
+    }
+}
