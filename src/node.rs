@@ -201,6 +201,25 @@ impl Node {
         })
     }
 
+    /// Returns this node's peer id.
+    pub fn id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    /// Returns the peer ids of all currently active connections.
+    pub async fn connected_peer_ids(&self) -> Vec<PeerId> {
+        self.connections.read().await.keys().copied().collect()
+    }
+
+    /// Returns the peer ids of all known peers.
+    pub async fn known_peer_ids(&self) -> Vec<PeerId> {
+        self.known_peers.read().await.keys().copied().collect()
+    }
+
+    /// Returns the worker a task was assigned to, if any.
+    pub async fn assigned_worker(&self, task_id: &TaskId) -> Option<PeerId> {
+        self.task_assignments.read().await.get(task_id).copied()
+    }
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn start(self: Arc<Self>) -> anyhow::Result<!> {
@@ -837,7 +856,7 @@ impl Node {
         Ok(())
     }
 
-    async fn broadcast_task(&self, task: Task) -> anyhow::Result<()> {
+    pub async fn broadcast_task(&self, task: Task) -> anyhow::Result<()> {
         let connections = self.connections.read().await.clone();
 
         event!(
@@ -995,5 +1014,35 @@ mod tests {
             .await;
 
         assert!(node.known_peers.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_is_capable_benchmark() {
+        let mut config = test_config("is_capable");
+        config.models = vec!["m".to_string()];
+        config.datasets = vec!["d".to_string()];
+        let node = Node::new("127.0.0.1:0".parse().unwrap(), None, config)
+            .await
+            .unwrap();
+
+        let supported = Task::new(
+            TaskId::new(),
+            TaskType::Benchmark {
+                model: "m".to_string(),
+                dataset: "d".to_string(),
+            },
+            9_999_999_999,
+        );
+        assert!(node.is_capable(&supported));
+
+        let unsupported = Task::new(
+            TaskId::new(),
+            TaskType::Benchmark {
+                model: "other".to_string(),
+                dataset: "other".to_string(),
+            },
+            9_999_999_999,
+        );
+        assert!(!node.is_capable(&unsupported));
     }
 }
