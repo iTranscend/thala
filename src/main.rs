@@ -5,14 +5,9 @@ use std::{error::Error, time::Duration};
 use clap::Parser;
 use tracing::{Level, info};
 
-use node::{Node, NodeConfig};
 use shared::tracing::{TracingConfig, init_tracing};
-
-mod cli;
-mod identity;
-mod message;
-mod node;
-mod types;
+use thala::cli;
+use thala::node::{Node, NodeConfig};
 
 #[tokio::main]
 async fn main() -> Result<!, Box<dyn Error>> {
