@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -11,7 +11,7 @@ use litep2p::PeerId;
 use litep2p::crypto::PublicKey;
 use nvml_wrapper::Nvml;
 use shared::{
-    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId, TaskType},
+    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId, TaskStatus, TaskType},
     validation::Validate,
 };
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -27,7 +27,10 @@ use tracing::{Level, event};
 
 use crate::{
     identity::IdentityManager,
-    message::{ConnectionReq, ConnectionResp, Coordinator, Message, TaskAnnouncement, TaskClaim},
+    message::{
+        ConnectionReq, ConnectionResp, Coordinator, Message, TaskAnnouncement, TaskAssignment,
+        TaskClaim,
+    },
 };
 
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB
@@ -41,6 +44,8 @@ pub struct NodeConfig {
     pub data_dir: PathBuf,
     pub models: Vec<String>,
     pub datasets: Vec<String>,
+    /// How long the coordinator collects claims for a task before selecting a worker
+    pub claim_window: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +113,10 @@ pub struct Node {
     pending_connections_channel: PendingConnectionsChannel,
     /// Tracks which worker (PeerId) was assigned each task
     task_assignments: Arc<RwLock<HashMap<TaskId, PeerId>>>,
+    /// Claims collected per task while its claim window is open
+    pending_claims: Arc<RwLock<HashMap<TaskId, Vec<TaskClaim>>>>,
+    /// Tasks this node announced as coordinator, tracked through their lifecycle
+    coordinated_tasks: Arc<RwLock<HashMap<TaskId, Task>>>,
 }
 
 impl Node {
@@ -187,6 +196,8 @@ impl Node {
                 receiver: Mutex::new(pending_rx),
             },
             task_assignments: Arc::new(RwLock::new(HashMap::new())),
+            pending_claims: Arc::new(RwLock::new(HashMap::new())),
+            coordinated_tasks: Arc::new(RwLock::new(HashMap::new())),
         }))
     }
 
@@ -219,6 +230,24 @@ impl Node {
     /// Returns the worker a task was assigned to, if any.
     pub async fn assigned_worker(&self, task_id: &TaskId) -> Option<PeerId> {
         self.task_assignments.read().await.get(task_id).copied()
+    }
+
+    /// Returns the status of a task this node coordinates, if known.
+    pub async fn coordinated_task_status(&self, task_id: &TaskId) -> Option<TaskStatus> {
+        self.coordinated_tasks
+            .read()
+            .await
+            .get(task_id)
+            .map(|task| task.status().clone())
+    }
+
+    /// Returns the status of a task this node has claimed as a worker, if known.
+    pub async fn pending_task_status(&self, task_id: &TaskId) -> Option<TaskStatus> {
+        self.pending_tasks
+            .read()
+            .await
+            .get(task_id)
+            .map(|task| task.status().clone())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -562,16 +591,180 @@ impl Node {
             }
             Message::TaskClaim(task_claim) => {
                 task_claim.validate()?;
-                self.task_assignments
-                    .write()
-                    .await
-                    .insert(task_claim.task_id, task_claim.worker_id);
-                event!(
-                    Level::INFO,
-                    "Task {:?} assigned to worker {:?}",
-                    task_claim.task_id,
-                    task_claim.worker_id
-                );
+
+                // Verify the sender is who they claim to be — the peer_id established
+                // during the handshake must match the worker_id in the claim.
+                let sender_id = match peer_id {
+                    Some(id) => *id,
+                    None => {
+                        event!(
+                            Level::WARN,
+                            "TaskClaim received from peer with no established identity"
+                        );
+                        return Ok(());
+                    }
+                };
+                if sender_id != task_claim.worker_id {
+                    event!(
+                        Level::WARN,
+                        "TaskClaim sender {:?} does not match claimed worker_id {:?}",
+                        sender_id,
+                        task_claim.worker_id
+                    );
+                    return Ok(());
+                }
+
+                let task_id = task_claim.task_id;
+
+                // Only accept claims for tasks this node coordinates
+                if !self.coordinated_tasks.read().await.contains_key(&task_id) {
+                    event!(
+                        Level::WARN,
+                        "TaskClaim received for unknown task {:?}",
+                        task_id
+                    );
+                    return Ok(());
+                }
+
+                // Ignore claims arriving after the task was assigned
+                if self.task_assignments.read().await.contains_key(&task_id) {
+                    event!(
+                        Level::INFO,
+                        "TaskClaim from {:?} for task {:?} arrived after assignment; ignoring",
+                        task_claim.worker_id,
+                        task_id
+                    );
+                    return Ok(());
+                }
+
+                // Collect the claim; the first claim for a task opens its claim window
+                let window_open = {
+                    let mut pending_claims = self.pending_claims.write().await;
+                    match pending_claims.entry(task_id) {
+                        Entry::Occupied(mut entry) => {
+                            let claims = entry.get_mut();
+                            // dedup claims by worker
+                            if claims
+                                .iter()
+                                .any(|claim| claim.worker_id == task_claim.worker_id)
+                            {
+                                event!(
+                                    Level::INFO,
+                                    "Duplicate TaskClaim from worker {:?} for task {:?}; ignoring",
+                                    task_claim.worker_id,
+                                    task_id
+                                );
+                            } else {
+                                claims.push(task_claim);
+                            }
+                            false
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(vec![task_claim]);
+                            true
+                        }
+                    }
+                };
+
+                if window_open {
+                    event!(
+                        Level::INFO,
+                        "Claim window opened for task {:?} ({:?})",
+                        task_id,
+                        self.config.claim_window
+                    );
+
+                    let claim_window = self.config.claim_window;
+                    let pending_claims = self.pending_claims.clone();
+                    let task_assignments = self.task_assignments.clone();
+                    let coordinated_tasks = self.coordinated_tasks.clone();
+                    let connections = self.connections.clone();
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(claim_window).await;
+
+                        let claims = pending_claims
+                            .write()
+                            .await
+                            .remove(&task_id)
+                            .unwrap_or_default();
+
+                        let Some(winner) = Self::select_worker(&claims) else {
+                            event!(
+                                Level::WARN,
+                                "Claim window for task {:?} closed with no claims",
+                                task_id
+                            );
+                            return;
+                        };
+                        let worker_id = winner.worker_id;
+
+                        task_assignments.write().await.insert(task_id, worker_id);
+                        if let Some(task) = coordinated_tasks.write().await.get_mut(&task_id) {
+                            task.set_status(TaskStatus::Running);
+                        }
+                        event!(
+                            Level::INFO,
+                            "Task {:?} assigned to worker {:?} ({} claim(s) considered)",
+                            task_id,
+                            worker_id,
+                            claims.len()
+                        );
+
+                        // Notify the winner; losers are dropped silently and their
+                        // pending copies expire via the task sweep
+                        if let Some((_, tx)) = connections.read().await.get(&worker_id) {
+                            let msg = Message::TaskAssignment(TaskAssignment { task_id, worker_id });
+                            if let Err(e) = tx.send(msg).await {
+                                event!(
+                                    Level::WARN,
+                                    "Failed to send TaskAssignment for task {:?} to worker {:?}: {}",
+                                    task_id,
+                                    worker_id,
+                                    e
+                                );
+                            }
+                        } else {
+                            event!(
+                                Level::WARN,
+                                "Winner {:?} of task {:?} is no longer connected; TaskAssignment not sent",
+                                worker_id,
+                                task_id
+                            );
+                        }
+                    });
+                }
+            }
+            Message::TaskAssignment(task_assignment) => {
+                if task_assignment.worker_id != self.peer_id {
+                    event!(
+                        Level::WARN,
+                        "TaskAssignment for worker {:?} received by {:?}; ignoring",
+                        task_assignment.worker_id,
+                        self.peer_id
+                    );
+                    return Ok(());
+                }
+
+                let mut pending_tasks = self.pending_tasks.write().await;
+                match pending_tasks.get_mut(&task_assignment.task_id) {
+                    Some(task) => {
+                        task.set_status(TaskStatus::Running);
+                        event!(
+                            Level::INFO,
+                            "Assigned task {:?}; marked Running",
+                            task_assignment.task_id
+                        );
+                        // TODO: execute task and send TaskResult to coordinator
+                    }
+                    None => {
+                        event!(
+                            Level::WARN,
+                            "TaskAssignment received for task {:?} not in pending_tasks",
+                            task_assignment.task_id
+                        );
+                    }
+                }
             }
             Message::TaskResult(task_result) => {
                 task_result.validate()?;
@@ -619,6 +812,10 @@ impl Node {
                             .write()
                             .await
                             .remove(&task_result.task_id);
+                        self.coordinated_tasks
+                            .write()
+                            .await
+                            .remove(&task_result.task_id);
                         // TODO: forward result to task submitter
                     }
                     Some(expected) => {
@@ -655,7 +852,7 @@ impl Node {
                 .unwrap()
                 .as_secs();
 
-            let expired_ids: Vec<TaskId> = self
+            let mut expired_ids: HashSet<TaskId> = self
                 .pending_tasks
                 .read()
                 .await
@@ -663,21 +860,47 @@ impl Node {
                 .filter(|(_, task)| task.expires() <= now)
                 .map(|(id, _)| *id)
                 .collect();
+            expired_ids.extend(
+                self.coordinated_tasks
+                    .read()
+                    .await
+                    .iter()
+                    .filter(|(_, task)| task.expires() <= now)
+                    .map(|(id, _)| *id),
+            );
 
             if !expired_ids.is_empty() {
                 let mut pending = self.pending_tasks.write().await;
                 let mut assignments = self.task_assignments.write().await;
+                let mut coordinated = self.coordinated_tasks.write().await;
+                let mut claims = self.pending_claims.write().await;
                 for id in &expired_ids {
                     pending.remove(id);
                     assignments.remove(id);
+                    coordinated.remove(id);
+                    claims.remove(id);
                 }
                 event!(
                     Level::INFO,
-                    "Swept {} expired task(s) from pending and assignment maps",
+                    "Swept {} expired task(s) from pending, assignment, coordinated and claim maps",
                     expired_ids.len()
                 );
             }
         }
+    }
+
+    /// Selects the winning claim: lowest estimated_duration wins; the earliest
+    /// received claim wins ties.
+    /// TODO: estimates are worker-supplied and spoofable — replace with
+    /// coordinator-computed estimates.
+    fn select_worker(claims: &[TaskClaim]) -> Option<&TaskClaim> {
+        // min_by_key returns the last minimum on ties; fold keeps the first
+        claims.iter().fold(None, |best: Option<&TaskClaim>, claim| {
+            match best {
+                Some(b) if b.estimated_duration <= claim.estimated_duration => Some(b),
+                _ => Some(claim),
+            }
+        })
     }
 
     #[tracing::instrument(level = "debug", name = "peer_reconnection_loop", skip(self))]
@@ -866,6 +1089,12 @@ impl Node {
             connections.len()
         );
 
+        // Track the task through its lifecycle as coordinator
+        self.coordinated_tasks
+            .write()
+            .await
+            .insert(task.id(), task.clone());
+
         let task_announcement = Message::TaskAnnouncement(TaskAnnouncement {
             task: task,
             coordinator: Coordinator {
@@ -938,7 +1167,45 @@ mod tests {
             data_dir: std::env::temp_dir().join(format!("thala_test_{}", dir_suffix)),
             models: vec![],
             datasets: vec![],
+            claim_window: Duration::from_secs(2),
         }
+    }
+
+    fn claim(worker_id: PeerId, estimated_duration: u64) -> TaskClaim {
+        TaskClaim {
+            task_id: TaskId::new(),
+            worker_id,
+            estimated_duration,
+        }
+    }
+
+    fn random_peer_id() -> PeerId {
+        PeerId::from_public_key(&PublicKey::Ed25519(Ed25519Keypair::generate().public()))
+    }
+
+    #[test]
+    fn select_worker_prefers_lowest_estimated_duration() {
+        let slow = claim(random_peer_id(), 120);
+        let fast = claim(random_peer_id(), 30);
+        let claims = vec![slow, fast.clone()];
+
+        let winner = Node::select_worker(&claims).unwrap();
+        assert_eq!(winner.worker_id, fast.worker_id);
+    }
+
+    #[test]
+    fn select_worker_breaks_ties_by_arrival_order() {
+        let first = claim(random_peer_id(), 90);
+        let second = claim(random_peer_id(), 90);
+        let claims = vec![first.clone(), second];
+
+        let winner = Node::select_worker(&claims).unwrap();
+        assert_eq!(winner.worker_id, first.worker_id);
+    }
+
+    #[test]
+    fn select_worker_empty_claims_returns_none() {
+        assert!(Node::select_worker(&[]).is_none());
     }
 
     #[tokio::test]

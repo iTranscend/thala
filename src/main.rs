@@ -35,6 +35,7 @@ async fn main() -> Result<!, Box<dyn Error>> {
         data_dir: args.data_dir(),
         models: args.models,
         datasets: args.datasets,
+        claim_window: Duration::from_secs(args.claim_window),
     };
 
     let node = Node::new(args.listen_address, args.bootstrap_node, config).await?;

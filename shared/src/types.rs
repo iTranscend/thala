@@ -86,7 +86,7 @@ pub enum TaskType {
     Inference,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
     Pending,
     Running,
@@ -118,6 +118,14 @@ impl Task {
 
     pub fn kind(&self) -> &TaskType {
         &self.kind
+    }
+
+    pub fn status(&self) -> &TaskStatus {
+        &self.status
+    }
+
+    pub fn set_status(&mut self, status: TaskStatus) {
+        self.status = status;
     }
 
     pub fn expires(&self) -> u64 {

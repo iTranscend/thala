@@ -57,6 +57,12 @@ impl Validate for TaskClaim {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskAssignment {
+    pub task_id: TaskId,
+    pub worker_id: PeerId,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: TaskId,
     pub result: TaskResultData,
@@ -83,6 +89,7 @@ pub enum Message {
 
     TaskAnnouncement(TaskAnnouncement),
     TaskClaim(TaskClaim),
+    TaskAssignment(TaskAssignment),
     TaskResult(TaskResult),
 }
 
@@ -185,6 +192,14 @@ mod tests {
             task_id: TaskId::new(),
             worker_id: peer_id(),
             estimated_duration: 90,
+        }));
+    }
+
+    #[test]
+    fn round_trip_task_assignment() {
+        assert_round_trip(Message::TaskAssignment(TaskAssignment {
+            task_id: TaskId::new(),
+            worker_id: peer_id(),
         }));
     }
 

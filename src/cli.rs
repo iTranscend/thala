@@ -28,6 +28,10 @@ pub struct Args {
     #[clap(short, long, default_value = "13")]
     pub reconnection_retries_cap: u32,
 
+    /// Time in secs the coordinator collects claims for a task before selecting a worker
+    #[clap(long, default_value = "2")]
+    pub claim_window: u64,
+
     /// RPC listening address
     #[clap(long)]
     pub rpc_addr: Option<SocketAddr>,

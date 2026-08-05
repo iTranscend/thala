@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use shared::types::{Task, TaskId, TaskType};
+use shared::types::{Task, TaskId, TaskStatus, TaskType};
 use thala::node::{Node, NodeConfig};
 
 /// Grab an ephemeral port by binding then dropping a listener. `Node::new`
@@ -33,6 +33,8 @@ fn test_config(tag: &str, models: Vec<String>, datasets: Vec<String>) -> NodeCon
         data_dir: unique_temp_dir(tag),
         models,
         datasets,
+        // short claim window to keep assignment tests fast
+        claim_window: Duration::from_millis(500),
     }
 }
 
@@ -165,6 +167,128 @@ async fn task_announcement_produces_claim() {
             .await
             == Some(worker.id()))
         .await,
-        "coordinator should record the worker's claim for the task"
+        "coordinator should assign the task to the claiming worker"
+    );
+    assert!(
+        wait_until(TIMEOUT, async || coordinator
+            .coordinated_task_status(&task_id)
+            .await
+            == Some(TaskStatus::Running))
+        .await,
+        "coordinator should mark the task Running after assignment"
+    );
+    assert!(
+        wait_until(TIMEOUT, async || worker
+            .pending_task_status(&task_id)
+            .await
+            == Some(TaskStatus::Running))
+        .await,
+        "worker should mark its pending task Running after receiving TaskAssignment"
+    );
+}
+
+#[tokio::test]
+async fn coordinator_assigns_exactly_one_of_two_claimants() {
+    let (coordinator, coord_addr) = spawn_node("assign_coord", None, vec![], vec![]).await;
+    let (worker_a, _) = spawn_node(
+        "assign_worker_a",
+        Some(coord_addr),
+        vec!["m".to_string()],
+        vec!["d".to_string()],
+    )
+    .await;
+    let (worker_b, _) = spawn_node(
+        "assign_worker_b",
+        Some(coord_addr),
+        vec!["m".to_string()],
+        vec!["d".to_string()],
+    )
+    .await;
+
+    // Both workers must have bidirectional connections with the coordinator so
+    // they receive the announcement and can send claims back.
+    for worker in [&worker_a, &worker_b] {
+        assert!(
+            wait_until(TIMEOUT, async || coordinator
+                .connected_peer_ids()
+                .await
+                .contains(&worker.id()))
+            .await,
+            "coordinator should be connected to worker"
+        );
+        assert!(
+            wait_until(TIMEOUT, async || worker
+                .connected_peer_ids()
+                .await
+                .contains(&coordinator.id()))
+            .await,
+            "worker should be connected to coordinator"
+        );
+    }
+
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    let task = Task::new(
+        TaskId::new(),
+        TaskType::Benchmark {
+            model: "m".to_string(),
+            dataset: "d".to_string(),
+        },
+        expires,
+    );
+    let task_id = task.id();
+
+    coordinator.broadcast_task(task).await.unwrap();
+
+    assert!(
+        wait_until(TIMEOUT, async || coordinator
+            .assigned_worker(&task_id)
+            .await
+            .is_some())
+        .await,
+        "coordinator should assign the task after the claim window"
+    );
+
+    let winner = coordinator.assigned_worker(&task_id).await.unwrap();
+    assert!(
+        winner == worker_a.id() || winner == worker_b.id(),
+        "assignment should go to one of the claiming workers"
+    );
+
+    assert_eq!(
+        coordinator.coordinated_task_status(&task_id).await,
+        Some(TaskStatus::Running),
+        "coordinator should mark the task Running"
+    );
+
+    // The assignment must be stable: late/duplicate claims must not change it.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        coordinator.assigned_worker(&task_id).await,
+        Some(winner),
+        "assignment should not change after the claim window closes"
+    );
+
+    // Exactly one worker was told to run the task.
+    let (winner_node, loser_node) = if winner == worker_a.id() {
+        (&worker_a, &worker_b)
+    } else {
+        (&worker_b, &worker_a)
+    };
+    assert!(
+        wait_until(TIMEOUT, async || winner_node
+            .pending_task_status(&task_id)
+            .await
+            == Some(TaskStatus::Running))
+        .await,
+        "winning worker should mark the task Running"
+    );
+    assert_eq!(
+        loser_node.pending_task_status(&task_id).await,
+        Some(TaskStatus::Pending),
+        "losing worker should still hold the task as Pending"
     );
 }
