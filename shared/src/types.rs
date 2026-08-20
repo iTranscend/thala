@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GpuVendor {
+    Nvidia,
+    Amd,
+    Apple,
+}
+
 use crate::{
     error::ValidationError,
     validation::{MIN_TASK_EXPIRATION_TIME, Validate},
@@ -37,7 +44,7 @@ impl IntoResponse for NodeInfo {
 pub struct Capabilities {
     pub cpu_cores: usize,
     pub memory: u64,
-    pub nvidia_gpus: Vec<GraphicCard>,
+    pub gpus: Vec<GraphicCard>,
     pub supported_models: Vec<String>,
     pub supported_datasets: Vec<String>,
 }
@@ -46,10 +53,9 @@ pub struct Capabilities {
 pub struct GraphicCard {
     pub id: String,
     pub name: String,
-    pub brand: nvml_wrapper::enum_wrappers::device::Brand,
+    pub vendor: GpuVendor,
     pub memory: u64,
-    pub architecture: nvml_wrapper::enums::device::DeviceArchitecture,
-    pub compute_mode: nvml_wrapper::enum_wrappers::device::ComputeMode,
+    pub architecture: Option<String>,
 }
 
 #[derive(Clone, Copy, Deserialize, Debug, Serialize, Hash, PartialEq, Eq)]
@@ -215,5 +221,33 @@ mod tests {
     #[test]
     fn task_id_validate_accepts_random() {
         assert!(TaskId::new().validate().is_ok());
+    }
+
+    #[test]
+    fn gpu_vendor_round_trip() {
+        use postcard;
+        for vendor in [GpuVendor::Nvidia, GpuVendor::Amd, GpuVendor::Apple] {
+            let bytes = postcard::to_stdvec(&vendor).expect("serialize");
+            let decoded: GpuVendor = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(vendor, decoded);
+        }
+    }
+
+    #[test]
+    fn graphic_card_round_trip() {
+        use postcard;
+        let card = GraphicCard {
+            id: "gpu-0".to_string(),
+            name: "Test GPU".to_string(),
+            vendor: GpuVendor::Nvidia,
+            memory: 8_000_000_000,
+            architecture: Some("Ampere".to_string()),
+        };
+        let bytes = postcard::to_stdvec(&card).expect("serialize");
+        let decoded: GraphicCard = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded.id, card.id);
+        assert_eq!(decoded.vendor, card.vendor);
+        assert_eq!(decoded.memory, card.memory);
+        assert_eq!(decoded.architecture, card.architecture);
     }
 }

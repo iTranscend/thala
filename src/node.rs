@@ -9,9 +9,8 @@ use std::{
 use jsonrpsee::server::{RpcModule, Server};
 use litep2p::PeerId;
 use litep2p::crypto::PublicKey;
-use nvml_wrapper::Nvml;
 use shared::{
-    types::{Capabilities, GraphicCard, NodeInfo, Task, TaskId, TaskStatus, TaskType},
+    types::{Capabilities, NodeInfo, Task, TaskId, TaskStatus, TaskType},
     validation::Validate,
 };
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -144,34 +143,7 @@ impl Node {
                 .with_cpu(CpuRefreshKind::nothing()),
         );
 
-        event!(Level::TRACE, "Loading Nvidia GPU capabilities if present");
-        let mut nvidia_gpus = vec![];
-
-        // load nvidia gpu data
-        match Nvml::init() {
-            Ok(nvml) => {
-                for i in 0..nvml.device_count()? {
-                    let device = nvml.device_by_index(i)?;
-                    let card = GraphicCard {
-                        id: device.uuid()?,
-                        name: device.name()?,
-                        brand: device.brand()?,
-                        memory: device.memory_info()?.free,
-                        architecture: device.architecture()?,
-                        compute_mode: device.compute_mode()?,
-                    };
-                    nvidia_gpus.push(card);
-                }
-                event!(Level::TRACE, "Nvidia data loaded");
-            }
-            Err(e) => {
-                event!(
-                    Level::TRACE,
-                    "No Nvidia GPUs found. Error: {}",
-                    e.to_string()
-                );
-            }
-        };
+        let gpus = crate::gpu::detect_all();
 
         Ok(Arc::new(Self {
             peer_id,
@@ -183,7 +155,7 @@ impl Node {
             capabilities: Capabilities {
                 cpu_cores: sys.cpus().len(),
                 memory: sys.total_memory() / 1_000_000_000,
-                nvidia_gpus,
+                gpus,
                 supported_models: config.models.clone(),
                 supported_datasets: config.datasets.clone(),
             },
@@ -1151,7 +1123,7 @@ mod tests {
         Capabilities {
             cpu_cores: 1,
             memory: 8,
-            nvidia_gpus: vec![],
+            gpus: vec![],
             supported_models: vec![],
             supported_datasets: vec![],
         }

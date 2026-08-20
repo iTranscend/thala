@@ -52,3 +52,6 @@ serde.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-metal = { version = "0.3", default-features = false, features = ["MTLDevice"] }

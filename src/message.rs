@@ -112,7 +112,7 @@ mod tests {
         Capabilities {
             cpu_cores: 4,
             memory: 16,
-            nvidia_gpus: vec![],
+            gpus: vec![],
             supported_models: vec!["m".to_string()],
             supported_datasets: vec!["d".to_string()],
         }
